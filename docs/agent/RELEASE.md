@@ -13,7 +13,7 @@
 | Signing | **none.** No certificate, no `signtool` invocation |
 | Update mechanism | **planned** — `vaani-updater` does not exist |
 | Publish target | **planned** — GitHub Releases ([ADR-007](../decisions/ADR-007-github-releases-distribution.md)) and WinGet ([ADR-008](../decisions/ADR-008-winget-distribution.md)) |
-| `scripts/build_doctor.ps1` | **referenced at `Cargo.toml:9` but does not exist** |
+| `scripts/build_doctor.ps1` | **exists** — the developer health gate, eight stages, `-Quick` / `-Release` / `-Json`. It is **not** the `vaani doctor` command, which still needs a CLI crate |
 | `runtime/runtime-manifest.json` | **not present** on this machine; written by `fetch_runtime.ps1:170` |
 
 In other words: release is entirely unbuilt. This document records the constraints that
@@ -37,7 +37,7 @@ The constraints below are not bureaucracy; each one encodes a decision made earl
 
 ## Release profile, verbatim
 
-`Cargo.toml:104-115`:
+`Cargo.toml:105-116`:
 
 ```toml
 [profile.release]
@@ -70,7 +70,7 @@ in the same package: a GUI `vaani.exe` with `windows_subsystem = "windows"` and 
 |---|---|
 | Ship without `SetDllDirectoryW` + preloads in `ensure_initialised` | acceleration breaks on every machine. See [COMMON_FAILURES §1](COMMON_FAILURES.md) |
 | Ship a cuDNN other than 9.14.0.64, or an ONNX Runtime other than 1.30.0 | unsupported pairing; see [COMMON_FAILURES §8](COMMON_FAILURES.md) |
-| Ship model weights in the installer | licence gate; and 2.66 GB of artefacts that a 4 GB laptop may not have disk for |
+| Ship model weights in the installer | licence gate; and 2.70 GB of artefacts that a 4 GB laptop may not have disk for |
 | Ship the CUDA Toolkit | the redistributables are runtime-only, no `nvcc`. `fetch_runtime.ps1:15-19` |
 | Ship the `ort` crate's CDN ORT build | it ships `75;80;90;120` and forces PTX JIT; Microsoft's `86-real` build has native SASS for sm_86 ([ADR-003](../decisions/ADR-003-onnx-runtime.md)) |
 | Set `panic = "abort"` | breaks cancellation |
@@ -90,9 +90,11 @@ $env:Path += ";$env:USERPROFILE\.cargo\bin"
 cargo build --release --workspace
 cargo clippy --release --workspace --all-targets
 
-# 2. The full suite. The integration test must actually load the model,
+# 2. The full suite. The integration tests must actually load the model,
 #    not skip. A green run that printed "SKIP" proves nothing.
 cargo test --release --workspace -- --nocapture
+#    111 tests. The load-bearing ones are `frontend_parity` (log-mel vs PyTorch)
+#    and `sravaani_transcribe` (decode vs the reference fixture).
 
 # 3. Confirm the runtime resolves from the *executable's* directory, not
 #    from the repo. This is the check that matters for a shipped build.
@@ -120,11 +122,17 @@ Not implemented. Listed so the gaps are explicit, not so they can be skipped.
 
 1. **Create `vaani-cli` and `vaani-app`.** Until then there is no `--version`, no
    `doctor`, and no `--debug`. `RuntimeReport` is the payload for all three
-   ([DEBUGGING.md](DEBUGGING.md)).
+   ([DEBUGGING.md](DEBUGGING.md)). `scripts/build_doctor.ps1` is the developer-time
+   substitute and covers everything except the binary's own arguments.
 2. **Install a `tracing_subscriber`.** Declared in `[workspace.dependencies]`
-   (`Cargo.toml:34`) but not a dependency of any member. Without it ORT's EP registration
+   (`Cargo.toml:35`) but not a dependency of any member. Without it ORT's EP registration
    failures are invisible, and a shipped build can fail to accelerate with no diagnostic.
-3. **Write `scripts/build_doctor.ps1`.** Referenced at `Cargo.toml:9`, does not exist.
+3. **Add CI.** At minimum: `cargo clippy --workspace --all-targets` warning-free,
+   `cargo test --workspace`, and a check that `runtime/` and `artifacts/` are still
+   gitignored. `scripts/build_doctor.ps1 -Quick` is the CI-shaped gate; stages 6–8 need a
+   machine with the runtime and the model, and `cargo test` on a machine without them
+   degrades to a no-op that still reports green. The parity stage must not be allowed to
+   report `SKIP` in CI — that is the stage that says the model still transcribes correctly.
 4. **Produce `runtime/runtime-manifest.json`.** `fetch_runtime.ps1:167-170` writes a
    per-DLL `{name, bytes, sha256}` manifest; the script's own header comment at `:23`
    incorrectly says the hashes are "pinned in `.\runtime\manifest.json`" — they are
@@ -135,23 +143,21 @@ Not implemented. Listed so the gaps are explicit, not so they can be skipped.
    never be shipped.
 6. **Regenerate `artifacts/sravaani/artefacts.json`.** The current one is stale — see the
    report. Shipping against stale checksums means the app verifies a file it does not
-   have.
-7. **Add CI.** At minimum: `cargo clippy --workspace --all-targets` warning-free,
-   `cargo test --workspace`, and a check that `runtime/` and `artifacts/` are still
-   gitignored. `cargo test` must run on a machine with the runtime present, or the
-   integration test silently degrades to a no-op.
-8. **Publish.** GitHub Releases for the portable ZIP, WinGet for the installer
+   have. Note the directory now holds **10** files including `tokenizer.model`; the
+   manifest must cover the tokeniser too, or the install is broken in a way that only
+   shows up at the first decode ([COMMON_FAILURES §12](COMMON_FAILURES.md)).
+7. **Publish.** GitHub Releases for the portable ZIP, WinGet for the installer
    ([ADR-007](../decisions/ADR-007-github-releases-distribution.md),
    [ADR-008](../decisions/ADR-008-winget-distribution.md)).
-9. **Verify the download hash after publishing.** The ORT zip's SHA-256
+8. **Verify the download hash after publishing.** The ORT zip's SHA-256
    `8fa4b08359af682cd605892cb59077049700b640128bb93fd2c7776cf9f55bdc` is a first-party
    value from the GitHub releases API, not one we computed from a file we already had.
 
 ## What it assumes
 
-- **Every benchmark number in [PERFORMANCE.md](PERFORMANCE.md) was taken in the `dev`
-  profile.** A release-profile figure must be measured separately before it is published;
-  do not reuse the existing numbers.
+- **Every benchmark number in [PERFORMANCE.md](PERFORMANCE.md) was taken with `--release`**,
+  on the one machine described there. A number from a `dev` build, or from another
+  machine, is not comparable and must not be reused.
 - **cuDNN 9.14.0.64 and ONNX Runtime 1.30.0 stay the pinned pairing.** If either moves,
   re-measure everything and update [PERFORMANCE.md](PERFORMANCE.md) in the same change.
 - **`runtime/` is gitignored and therefore not in any clone.** A fresh clone has no

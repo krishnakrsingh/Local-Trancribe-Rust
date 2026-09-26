@@ -4,18 +4,20 @@
 
 ### On disk right now
 
-`artifacts/sravaani/` — 2.66 GB, produced by `scripts/export_sravaani_onnx.py`. Verified
-2026-09-27 against the actual files:
+`artifacts/sravaani/` — 2,702,792,388 B (2577.6 MiB), 10 files, produced by
+`scripts/export_sravaani_onnx.py`. Verified 2026-09-27 against the actual files:
 
 | File | Bytes | Graph I/O | Role |
 |---|---:|---|---|
 | `encoder.fp16.onnx` | 886,484,931 | `feats` **FLOAT16**, `enc_out` **FLOAT16** | **production encoder** |
 | `encoder.onnx` | 1,772,812,911 | `feats` FLOAT, `enc_out` FLOAT | reference / CPU fallback |
 | `decoder_joint.onnx` | 43,033,439 | all FLOAT except `tgt`/`tlen` INT32 | TDT emission step |
+| `tokenizer.model` | 325,287 | — | SentencePiece unigram model, **copied here by the exporter**; without it the engine cannot open |
 | `mel_window.f32` | 1,600 | 400 × f32 | `torch.hann_window(400, periodic=False)`, max 0.99998 |
 | `mel_fb.f32` | 131,584 | 32,896 × f32 = 128 × 257 | mel filterbank, row-major |
 | `preproc.json` | 426 | — | front-end parameters |
 | `config.json` | 590 | — | model hyper-parameters, mirrored from the HF config |
+| `model_meta.json` | 257 | — | copied from the Hugging Face snapshot |
 | `artefacts.json` | 1,363 | — | sha256 + byte count of every output — **currently stale, see below** |
 
 Graph signatures confirmed by loading the protos with `onnx` 1.23.0:
@@ -81,7 +83,7 @@ Weights are never committed. The repository ships source and lightweight metadat
 
 1. **Licence and access.** SraVaani-1.0 is MIT *but gated* on Hugging Face. Committing the
    weights would redistribute them outside the gate and outside the licence's terms.
-2. **Size.** 908 MB of TorchScript plus 2.66 GB of artefacts is not a git repository.
+2. **Size.** 908 MB of TorchScript plus 2.70 GB of artefacts is not a git repository.
 
 The exported artefacts are checksummed by `artefacts.json` and, at release time, by the
 model manifest described below, so a downloaded copy can be verified without re-running
@@ -98,14 +100,17 @@ The native-fp16-encoder / fp32-decoder split is the central technical decision h
 | "Fix" `log_zero_guard_value` to NeMo's usual `1e-5` | it is `2⁻²⁴` in `preproc.pt` (`preproc.json:12`). Changing it changes the normalisation. Verified against `SraVaani-1.0/processing_sravaani.py:84` |
 | Use `onnxconverter_common.float16` on this graph | it produces a graph ONNX Runtime rejects. See [COMMON_FAILURES §2](COMMON_FAILURES.md) |
 | Make `decoder_joint.onnx` fp16 | its LSTM state is threaded through every emission step; error compounds over minutes. `export_sravaani_onnx.py:328-333` |
-| Feed f32 to `encoder.fp16.onnx` | native fp16 I/O. `F16Tensor::from_f32` is the only sanctioned conversion, `session.rs:83` |
+| Feed f32 to `encoder.fp16.onnx` | native fp16 I/O. `F16Tensor::from_f32` is the only sanctioned conversion, `session.rs:84` |
 | Pad or shorten `mel_window.f32` | it is exactly 400 samples and is symmetric Hann, not periodic. Zero-padding to 512 happens in the front end at load time, not in the artefact |
 | Reorder the TDT decode loop's request for `decoder_joint` outputs | request `["logits", "h_out", "c_out"]` **by name**; `target_length` is dead but cannot be removed from the graph |
 | Treat `preproc.pt` as readable from Rust | it is a zip+pickle. It is unpacked once by the exporter into `mel_window.f32` + `mel_fb.f32` + `preproc.json`. `export_sravaani_onnx.py:54-59` |
+| Omit `tokenizer.model` from the artefacts directory | it exists in the HF snapshot, so development works and the install does not. [COMMON_FAILURES §12](COMMON_FAILURES.md) |
+| Centre the window by hand, or pad it asymmetrically | `window_offset = (n_fft − win_length) / 2 = 56`, from `torch.stft`'s own rule. [COMMON_FAILURES §9](COMMON_FAILURES.md) |
 
-### The log-mel front end, to be reimplemented in `vaani-asr`
+### The log-mel front end, in `vaani-asr`
 
-Not yet written. This is the exact order, read out of
+Implemented in `crates/vaani-asr/src/frontend.rs` as a faithful port; this table is the
+specification it implements, read out of
 `SraVaani-1.0/processing_sravaani.py:68-89` and `_normalize_per_feature`
 (`SraVaani-1.0/modeling_sravaani.py:61-70`):
 
@@ -121,24 +126,35 @@ Not yet written. This is the exact order, read out of
 | 8 | normalise | per feature: `mean` over valid frames, `var = Σ(x-mean)²/(N-1)` (**Bessel, N−1**), `std = sqrt(var)` with `NaN → 0`, then `std = std + 1e-5` (**added to the std**, not a floor), output `(x-mean)/std` — `modeling_sravaani.py:61-70` |
 | 9 | pad | frames with index `>= seq_len` set to `pad_value = 0.0` — `:87-88` |
 
-Consequences to carry into the Rust implementation:
+What the Rust port does with each of those, and what each one costs if you "fix" it:
 
 - `center=true` means `torch.stft` zero-pads `n_fft/2` at each end, producing
-  `1 + wav_len/hop` frames — **exactly one more than `seq_len`**. The last frame is
-  always padding.
+  `1 + wav_len/hop` frames — **exactly one more than `seq_len`**. The last frame is always
+  padding, and the encoder subsamples the *tensor*, so its output is one column longer than
+  `enc_lengths` says. Decode `enc_lengths` frames, not the tensor width
+  ([COMMON_FAILURES §11](COMMON_FAILURES.md)).
+- The 400-sample window sits at `[56, 456)` of the 512-point FFT buffer, **not** `[0, 400)`:
+  `window_offset = (n_fft − win_length) / 2`. Left-aligning it shifts everything by 3.5 mel
+  frames and produces a transcript that is merely worse
+  ([COMMON_FAILURES §9](COMMON_FAILURES.md)).
+- The imaginary part of the power spectrum is read from bin `k` itself, never from the
+  Hermitian mirror, which relates the conjugate ([COMMON_FAILURES §10](COMMON_FAILURES.md)).
 - `denom - 1.0` at `modeling_sravaani.py:68` divides by zero when `seq_len == 1`; the
   `masked_fill(isnan → 0)` at `:69` is what makes that survivable. Preserve it.
-- The window is applied centred within the 512-point FFT buffer, so indices 200..311 of
-  the buffer are the second half of the window followed by 112 zeros.
 - All numerics stay `f32`. The single `f32 → f16` conversion happens at the graph edge in
-  `F16Tensor::from_f32` (`session.rs:83`).
+  `F16Tensor::from_f32` (`session.rs:84`).
+
+Verified: `cargo test -p vaani-asr --test frontend_parity -- --nocapture` compares every one
+of the 128 × 101 cells against values computed by PyTorch from these same tensors. Worst cell
+**7.99e-05** against a 2e-4 tolerance. The fixture is generated by `scripts/make_golden.py`.
 
 ### Output shape invariant
 
-`enc_lengths == ceil(T_mel / 8)` exactly. Asserted by the exporter at
-`export_sravaani_onnx.py:437-444` for T ∈ {200, 1600, 4800}, and by
-`tests/runtime_smoke.rs:155` for T=1600 → 200. Verified for T = 200, 437, 1600, 4800,
-24000.
+`enc_lengths == ceil(T_mel / 8)` exactly, where `T_mel` is `feature_lengths`. Asserted by the
+exporter at `export_sravaani_onnx.py:437-444` for T ∈ {200, 1600, 4800}, and by
+`tests/runtime_smoke.rs:155` for T=1600 → 200. Measured for twelve lengths with
+`cargo run -p vaani-inference --example subsample_probe`, including the awkward ones (437 →
+55, 1601 → 201); see [PERFORMANCE.md](PERFORMANCE.md).
 
 ## How to test it
 
@@ -150,8 +166,16 @@ cargo test -p vaani-inference --test runtime_smoke -- --nocapture
 # Both encoders, fp16 vs fp32, on this machine:
 cargo run -p vaani-inference --example conv_probe
 
+# The front end against PyTorch, and the decode against the reference fixture:
+cargo test -p vaani-asr --test frontend_parity -- --nocapture
+$env:VAANI_GOLDEN_RAW = "C:\...\scratch\golden_clip.f32"   # absolute, raw f32
+cargo test -p vaani-asr --test sravaani_transcribe -- --nocapture --test-threads=1
+
 # Re-derive the artefacts from the TorchScript (needs Python, ~10 min, 3 GB RAM):
 python scripts/export_sravaani_onnx.py --src SraVaani-1.0 --out artifacts/sravaani
+
+# Re-derive the fixtures (needs Python, transformers, soundfile):
+python scripts/make_golden.py --src SraVaani-1.0 --out tests/fixtures
 ```
 
 The exporter is its own test suite. It aborts on any of:
@@ -172,7 +196,9 @@ The exporter is its own test suite. It aborts on any of:
 
 Measured parity (last recorded run): `decoder_joint` logits `max|d| = 2.29e-05`, `h`
 `4.76e-07`. `encoder.fp16` vs fp32: `max|d| = 0.046`, `mean|d| = 0.00082`, argmax
-agreement **99.609%**.
+agreement **99.609%**. Front end vs PyTorch, cell by cell: max `|d|` = **7.99e-05** over
+128 × 101 cells. Decode vs the reference TDT loop: **202/202 token ids**, **108/108 word
+timings** within **0.0 ms**, exact text.
 
 ### The model manifest
 
@@ -230,12 +256,17 @@ inferred from prose.
   re-run.
 - **The 5,000-piece SentencePiece unigram model is the only tokeniser.** 2,190 pieces
   carry the U+2581 metaspace prefix; any Rust implementation must reproduce byte-for-byte
-  including that prefix.
-- **`sentencepiece-rs` 0.2 is young** (0.2.x, ~5.8k downloads at time of writing). It has
-  zero dependencies, no C++ toolchain, and is Windows-safe, but it is unproven here. It
-  needs a byte-for-byte decode parity test against Python `sentencepiece` 0.2.2 — the
-  reference implementation, measured on this machine — **before** any transcript is
-  considered trustworthy. There is currently no such test, because no Rust tokeniser
-  exists.
+  including that prefix. `sravaani.rs:400-455` groups pieces on that prefix — one `Word` per
+  piece is the mistake that makes a transcript look like it has a space after every
+  syllable, and it is invisible in a token-id comparison.
+- **`sentencepiece-rs` 0.2 is young** (resolved to 0.2.2). It has zero dependencies, no C++
+  toolchain, and is Windows-safe, and it is now exercised end to end rather than in
+  isolation: the decode fixture is generated by Python `sentencepiece` 0.2.2 and the Rust
+  side reproduces **108/108 words with identical surface forms and an exact text match**
+  (`tests/sravaani_transcribe.rs`, `VAANI_GOLDEN_RAW` set). That is a parity test against
+  the reference implementation on real output, which is what the earlier version of this
+  document asked for and did not have. What it does **not** cover is the full vocabulary:
+  2,190 of 5,000 pieces carry the metaspace marker, and the fixture exercises the pieces a
+  40 s Hindi meeting recording happens to use. A piece outside that set is unproven.
 - **The licence is MIT and the weights are gated.** Any redistribution of the artefacts,
   as opposed to the source, needs both facts re-checked first.

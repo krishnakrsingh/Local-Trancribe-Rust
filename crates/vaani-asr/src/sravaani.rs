@@ -8,15 +8,19 @@
 //! ```text
 //!   log-mel [1,128,T] fp16 ──▶ encoder ──▶ enc_out [1,1024,ceil(T/8)] fp16
 //!                                                       │
-//!   per emission step, ~0.3-0.5 per frame:               ▼
+//!   per emission step, 0.26-0.72 per frame:             ▼
 //!     decoder_joint(f[1,1024,1], last_id, h[1,1,640], c[1,1,640])
 //!       ──▶ logits[1,1,1,5006] ──▶ argmax ──▶ (token, duration)
 //! ```
 //!
 //! The joint runs once per *emission step*, not once per frame. TDT predicts
 //! how many frames each emitted token owns, so a decoder that advanced a frame
-//! at a time would spend most of its time on blanks. On speech the ratio is
-//! roughly 0.3-0.5 steps per frame.
+//! at a time would spend most of its time on blanks. The resulting ratio is
+//! audio dependent -- measured at 0.262 steps/frame on a synthetic two-tone
+//! signal and 0.714 on 40 s of real meeting speech -- and
+//! `transcribes_without_producing_nonsense` asserts it stays in a plausible
+//! band, because reading the duration logits at the wrong offset still produces
+//! a finite, plausible-looking transcript rather than an error.
 //!
 //! # fp16 encoder, fp32 joint
 //!

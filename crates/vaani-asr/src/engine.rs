@@ -92,7 +92,16 @@ pub struct AsrTimings {
     pub decode_ms: u64,
     /// Number of encoder frames processed.
     pub encoder_frames: usize,
-    /// Number of emission steps taken. Roughly 0.3-0.5 per encoder frame.
+    /// Number of emission steps taken.
+    ///
+    /// Divided by `encoder_frames` this is the transducer's compression ratio.
+    /// It is genuinely audio dependent and a useful health signal: measured
+    /// 0.262 steps/frame on a synthetic two-tone signal and 0.714 on 40 s of
+    /// real meeting speech, against a theoretical floor above 0 and a ceiling of
+    /// `max_symbols` (10) on a pathological frame. A value outside roughly
+    /// 0.2-1.5 means the duration logits are being read at the wrong offset,
+    /// which is the single most damaging thing that can go wrong in the decode
+    /// loop and produces plausible-looking nonsense rather than a crash.
     pub decode_steps: usize,
 }
 
