@@ -1,0 +1,81 @@
+# ---------------------------------------------------------------------------
+# MODEL WEIGHTS AND MEDIA — never committed.
+#
+# The public repository contains source and lightweight metadata only. Model
+# artefacts are fetched by the Model Manager on the user's machine; the private
+# development recording stays local. See docs/agent/MODELS.md.
+# ---------------------------------------------------------------------------
+
+# Local model snapshots and any HF cache we point the app at
+SraVaani-1.0/
+models/
+artifacts/
+!models/registry/*.json
+!models/manifests/*.json
+.cache/
+huggingface/
+
+# Runtime binaries fetched by scripts/fetch_runtime.ps1
+runtime/
+
+# Private development / benchmark media
+*.mp4
+*.mkv
+*.mov
+*.webm
+*.avi
+*.m4v
+*.mpg
+*.mpeg
+*.ts
+*.flv
+*.wmv
+*.wav
+*.mp3
+*.m4a
+*.aac
+*.flac
+*.ogg
+*.opus
+*.wma
+*.aiff
+*.amr
+# ...but committed test fixtures under tests/ are intentional
+!tests/fixtures/**/*.wav
+!tests/fixtures/**/*.flac
+
+# Extracted / derived media, and working scratch (private audio slices)
+scratch/
+*.pcm
+*.raw
+extracted/
+
+# ---------------------------------------------------------------------------
+# RUST
+# ---------------------------------------------------------------------------
+/target/
+**/*.rs.bk
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# ---------------------------------------------------------------------------
+# EDITORS / OS
+# ---------------------------------------------------------------------------
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# ---------------------------------------------------------------------------
+# SECRETS — belt and braces. The HF token belongs in Windows Credential
+# Manager (or a DPAPI-sealed file), never in the tree.
+# ---------------------------------------------------------------------------
+*.token
+*token*.json
+.env
+.env.*

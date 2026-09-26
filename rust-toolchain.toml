@@ -1,0 +1,9 @@
+# VaaniDesk — build environment is pinned so a dev box and CI agree.
+# MSVC host: the shipped app links the official Microsoft ONNX Runtime Windows
+# binaries and uses windows-rs COM for Media Foundation, both of which are
+# first-class on the MSVC target. See docs/decisions/ADR-003-onnx-runtime.md.
+[toolchain]
+channel = "1.98.1"
+targets = ["x86_64-pc-windows-msvc"]
+profile = "minimal"
+components = ["rustfmt", "clippy"]

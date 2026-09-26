@@ -1,0 +1,116 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/vaani-core",
+    "crates/vaani-inference",
+    "crates/vaani-asr",
+]
+# Members are added as each crate is created, one at a time, so that a
+# `cargo check` failure always points at a single new crate rather than at
+# fifteen half-written ones. `scripts/build_doctor.ps1` runs the full workspace.
+
+# Central dependency versions. Adding a third-party crate means adding it here
+# once with a note, not sprinkled across manifests.
+[workspace.dependencies]
+vaani-core = { path = "crates/vaani-core" }
+vaani-media = { path = "crates/vaani-media" }
+vaani-inference = { path = "crates/vaani-inference" }
+vaani-asr = { path = "crates/vaani-asr" }
+vaani-vad = { path = "crates/vaani-vad" }
+vaani-diarization = { path = "crates/vaani-diarization" }
+vaani-postprocess = { path = "crates/vaani-postprocess" }
+vaani-structuring = { path = "crates/vaani-structuring" }
+vaani-export = { path = "crates/vaani-export" }
+vaani-storage = { path = "crates/vaani-storage" }
+vaani-models = { path = "crates/vaani-models" }
+vaani-updater = { path = "crates/vaani-updater" }
+vaani-app = { path = "crates/vaani-app" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+bytes = "1"
+futures = "0.3"
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+rayon = "1"
+sha2 = "0.10"
+hex = "0.4"
+uuid = { version = "1", features = ["v4", "serde"] }
+time = { version = "0.3", features = ["formatting", "macros", "local-offset"] }
+dirs = "6"
+walkdir = "2"
+tempfile = "3"
+rustfft = "6"
+rubato = "0.16"
+symphonia = { version = "0.6", features = ["all"] }
+rfd = "0.17"
+ort = { version = "2.0.0-rc.13", default-features = false, features = [
+    "std",
+    "ndarray",
+    "half",
+    "cuda",
+    "load-dynamic",
+    "tracing",
+] }
+ort-sys = { version = "2.0.0-rc.13", default-features = false, features = [
+    "std",
+    "load-dynamic",
+] }
+sentencepiece-rs = "0.2"
+rusqlite = { version = "0.37", features = ["bundled", "chrono", "serde_json"] }
+reqwest = { version = "0.13", default-features = false, features = [
+    "rustls-tls",
+    "stream",
+    "http2",
+] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "time", "process"] }
+keyring = { version = "4", features = ["v1"] }
+zeroize = "1"
+url = "2"
+clap = { version = "4", features = ["derive"] }
+windows = "0.62"
+yuv = "0.8"
+cpal = "0.18"
+ndarray = "0.17"
+# f16 boundary tensors. Used only at the ONNX graph edge; all numerics in the
+# media and front-end crates stay f32.
+half = "2"
+
+[workspace.lints.rust]
+# The whole workspace is `unsafe`-averse by policy; any `unsafe` needs a
+# comment justifying it and is expected in the FFI crates only.
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+# `expect`/`unwrap` are legitimate in tests and in the CLI's fatal paths.
+expect_used = "allow"
+unwrap_used = "allow"
+too_many_arguments = "allow"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# Hot paths in the media/ASR crates are deliberately branch-heavy; `needless_range_loop`
+# there usually means a clearer iterator exists, so keep it on.
+needless_range_loop = "warn"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
+strip = "debuginfo"
+
+# Benchmarks must be reproducible, so keep debug info in the bench profile.
+[profile.bench]
+opt-level = 3
+lto = "thin"
+debug = 1

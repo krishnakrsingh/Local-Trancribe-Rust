@@ -1,0 +1,23 @@
+[package]
+name = "vaani-asr"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "ASR engine abstraction and the SraVaani 1.0 adapter for VaaniDesk."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+vaani-core = { workspace = true }
+vaani-inference = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rustfft = { workspace = true }
+sentencepiece-rs = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
