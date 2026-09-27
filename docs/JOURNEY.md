@@ -207,36 +207,116 @@ and `cargo test --workspace` are all clean. Every agent's claims above were
 re-verified by running them, not taken on trust — which is how the A1
 cancellation tests and the three `vaani-app` failures were caught.
 
+---
+
+## Phase 5 — the first end-to-end run
+
+Everything above was eleven subsystems measured one at a time. The full chain
+had never been run on the real meeting. It has now, in release, through the
+production path (`vaani transcribe`, the real `ModelManager`, the real
+`EngineRegistry`, the real CUDA provider), and the gate is
+`scripts\e2e\acceptance.ps1`.
+
+On a 13.9-minute / 834.197 s recording, an RTX 3050 Ti with 3.3 GB of VRAM:
+
+| stage | wall | share |
+|---|---|---|
+| model open + load (once) | 9.5 s | 18 % |
+| ASR, 23 chunks | 33.0 s | 62 % |
+| VAD | 6.7 s | 13 % |
+| diarization | 3.8 s | 7 % |
+| decode to mono 16 kHz | 0.12 s | 0.2 % |
+| storage + five exports | 0.12 s | 0.2 % |
+| **total** | **53.3 s** | |
+
+**A 14-minute meeting takes 53 seconds, and ASR is 80 % of it.** Within ASR the
+encoder is 21 s of the 33 s, the decoder 7.6 s and the log-mel front end 4.4 s.
+Peak working set 1.49 GiB. Whole-job RTF 15.0; ASR alone 25.3.
+
+**Diarization does not dominate.** At 3.8 s it is 7 % of the job. The brief's
+guess that it might was wrong, and the thing that would make it dominate —
+a trained speaker embedder — does not exist yet.
+
+The result is *correct*, not merely produced: word timings are monotonic and in
+bounds, every one of the 1,913 chunk-local segments is present in the transcript
+at exactly `chunk_offset + chunk_local`, the transcript touches 230 of the 240
+detected speech spans, speaker shares match measured talk time, the SQLite round
+trip is field-for-field equal, and both subtitle files parse and check clean.
+Cancellation takes 7 ms to take effect. Those are now asserts in
+`crates/vaani-cli/tests/e2e_acceptance.rs`, not observations.
+
+### What the run found
+
+1. **Nothing groups words into segments.** `SraVaaniEngine::tokens_to_segments`
+   emits one `Segment` per `Word` and says in its own doc comment that "segments
+   are later merged into phrases and attributed to speakers by diarization". The
+   attribution half happens. The merging half exists nowhere in the repository.
+   The shipped transcript is 1,913 words in 1,913 segments, and the `.srt` is
+   1,913 cues of one word each for a 14-minute meeting. This is the largest
+   product gap in the project and no per-stage measurement could have found it,
+   because every stage is behaving exactly as it was specified to.
+2. **`RuntimeLocation::discover` ignores `VAANI_RUNTIME_DIR`.** It returns the
+   variable's value as `ort_dll` instead of joining `onnxruntime.dll` onto it,
+   so setting the variable makes the runtime report as *absent*. `vaani-inference`
+   is frozen; reported, not fixed.
+3. **`--out <a directory that does not exist>` failed** with a bare
+   `os error 3` *after* the whole 14-minute job, on the CLI. The wave-2 fix for
+   this ("directory targets are now created") went into `vaani-app`'s export
+   stage, which the CLI does not use.
+4. **An unknown `--model` id returned `ErrorCode::Internal`.** The id is
+   something the user typed, and `internal` tells them nothing and asks them to
+   file a bug. Fixed to `model_unavailable`.
+5. **A segment ends 23 ms past the end of the recording.** `push_chunk` clamps
+   chunk-local times at zero and has no media duration to clamp against.
+   `vaani-core` is frozen; reported, not fixed.
+6. **The VAD calls 86.5 % of this meeting speech.** Plausible for a recorded
+   meeting, high enough to be worth a look.
+7. **Two speakers for a 14-minute meeting.** Consistent with A4's stated
+   operating region and its own honest labelling, but worth saying plainly: the
+   diarizer is very likely under-counting here.
+
 ## What is still open
 
 Ordered by how much it matters to shipping, not by convenience.
 
-1. **Diarization is a heuristic, not a model.** No embedding weights exist. It
+1. **Nothing groups words into segments.** The single largest gap in the
+   project, found only by the first end-to-end run. Every stage does exactly
+   what it was specified to do; the specification is what is missing. A
+   transcript is a word-per-line list and an `.srt` is one cue per word.
+   Deciding the grouping policy is a product decision (by pause? by speaker
+   turn? by maximum length?) that changes every downstream contract, so it is
+   not something an acceptance pass should have invented on its own.
+2. **Diarization is a heuristic, not a model.** No embedding weights exist. It
    is usable and honestly bounded, and it is the weakest link in the pipeline.
    A4 has named the exact operating region.
-2. **No end-to-end run on the real meeting yet.** Every stage has been measured
-   on the real clip individually. The full chain has not been run through and
-   timed as one job, which is the only number that actually answers "how long
-   does a 14-minute meeting take".
-3. **No SRT or VTT parser has validated the export.** A6 wrote reference
+3. **`RuntimeLocation::discover` does not join `ORT_DLL` onto
+   `VAANI_RUNTIME_DIR`**, so the one documented way to point the app at a
+   runtime makes that runtime report as missing. `vaani-inference` is frozen.
+4. **No SRT or VTT parser has validated the export.** A6 wrote reference
    parsers implementing the published rules; no third-party parser and no real
-   player has checked the bytes. On the release checklist: open one `.srt` and
-   one `.vtt` in a real player.
-4. **Downloads are unverified against the network.** There is no network on the
+   player has checked the bytes. Phase 5 checked them with
+   `vaani_export::verify` on the real transcript: both parse, both pass the
+   two-line and no-overlap rules, and the cue count matches. Still no real
+   player. On the release checklist: open one `.srt` and one `.vtt`.
+5. **Downloads are unverified against the network.** There is no network on the
    build machine. A7 tested the entire transfer path over real TCP against a
    local HTTP/1.1 server, including `Range`, resume, redirect-to-CDN, auth and
    truncation — but the actual Hugging Face endpoint and its xet bridge have
    never been contacted. A7 names this as the most likely first real-world
    failure.
-5. **`ErrorCode` is missing two variants** that three agents had to work around:
+6. **`ErrorCode` is missing two variants** that three agents had to work around:
    `Interrupted` (a job killed by a crash currently masquerades as `cancelled`)
    and `ResourceBusy` (a lost install race and a locked model both surface as a
-   storage error).
-6. **The model cannot be redistributed casually.** SraVaani is MIT but the
+   storage error). A third is now visible: there is no `UnknownModel`, so a
+   user who mistypes `--model` gets `model_unavailable`, whose title is close
+   but not right.
+7. **The model cannot be redistributed casually.** SraVaani is MIT but the
    repository is `gated-token`, so a first run needs a Hugging Face token and
    ~887 MiB. There is no bundled-weights path.
-7. **Paint performance is unmeasured.** A5 measured all the state work; nobody
+8. **Paint performance is unmeasured.** A5 measured all the state work; nobody
    has measured frame time with a real transcript on screen.
+9. **`push_chunk` has no upper clamp.** A decoded frame can land past the end of
+   the recording — 23 ms did, on the real clip. `vaani-core` is frozen.
 
 ## The rule that keeps producing the bugs
 
@@ -244,6 +324,13 @@ Every defect in this project was a thing that was *plausible* and not *checked*:
 a power spectrum missing a factor of two, a window index missing an offset, a
 cancel that raced a fast decoder, a summary that reported a phase without the
 fact that phase implied.
+
+Phase 5 supplied the sharpest example yet. Every stage in this pipeline is
+correct, the timings are good, and the product is still not shippable, because
+the step *between* two stages — grouping words into segments — was assumed by a
+doc comment and never built. A green per-stage benchmark is not a green product,
+and the only thing that found this was running the whole chain once on real
+audio.
 
 The defences that actually caught them were golden files, tests written to fail,
 and measuring the claim instead of repeating it. Keep those three.
