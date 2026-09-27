@@ -70,6 +70,24 @@ pub struct ModelStatus {
     /// The licence text, as a URL.
     pub license_url: String,
     pub access: Access,
+    /// Whether the distribution ships this model under `<app>/models/`.
+    ///
+    /// Added for the zero-token mandate and deliberately separate from
+    /// [`Self::access`], because the UI needs both and they say different
+    /// things:
+    ///
+    /// * `bundled && installed` → render no download button and no credential
+    ///   field. This is the first-run state, and it must be a dead end for the
+    ///   *token* flow specifically, because the model is already here.
+    /// * `!bundled && access.needs_token()` → the credential field is the only
+    ///   way to proceed, and saying so is correct.
+    /// * `bundled && !installed` → the user deleted `models/`; the recovery is
+    ///   to reinstall, not to fetch 887 MB with a token.
+    ///
+    /// [`Choice`] deliberately does **not** carry this: it is frozen at four
+    /// fields for A5's binding, and the same information reaches the picker
+    /// through [`Choice::detail`].
+    pub bundled: bool,
     pub source_provider: Provider,
     /// `org/name` for a Hub model, empty otherwise.
     pub source_repo: String,
@@ -769,6 +787,7 @@ impl ModelManager {
             license_name: model.license.name.clone(),
             license_url: model.license.url.to_string(),
             access: model.access,
+            bundled: model.bundled,
             source_provider: model.source.provider,
             source_repo: model.source.repo.clone(),
             homepage: model.source.homepage.as_ref().map(ToString::to_string),
@@ -896,6 +915,20 @@ impl DownloaderExt for Option<Downloader> {
 ///
 /// When a model cannot be used this is the **reason**, because a row with
 /// `available: false` and no explanation is a support ticket.
+///
+/// # A bundled model must not mention a token
+///
+/// This is the one line a first-run user reads, on a machine where the weights
+/// are already on disk. Printing "needs a Hugging Face token" there would be
+/// false — no token is being needed, nothing is being downloaded — and it would
+/// be the *only* thing standing between that user and a working transcript. So
+/// the clause is emitted only when a credential is genuinely on the path: when
+/// the model is not present and obtaining it would need one.
+///
+/// For a bundled model that has been deleted, the honest answer is not "here is
+/// a token" but "reinstall", because reinstalling is both the recovery and the
+/// faster one. The token clause is still reachable for anyone who wants to
+/// install a *different* model into app data, which is what `access` is for.
 fn describe(
     model: &Model,
     found: Option<&DiscoveredModel>,
@@ -911,6 +944,12 @@ fn describe(
             "{} on disk",
             human_bytes(found.map_or(0, |f| f.on_disk_bytes))
         ));
+        if model.bundled {
+            // Where it came from, and the reason no download is being offered.
+            // A user who wonders "do I need to do anything?" should be able to
+            // read the answer off this row.
+            parts.push("included with VaaniDesk".to_string());
+        }
     } else if present {
         let have = found.map_or(0, |f| f.on_disk_bytes);
         parts.push("Not ready".to_string());
@@ -925,6 +964,12 @@ fn describe(
         if !problems.is_empty() {
             parts.push(format!("{} file(s) missing or damaged", problems.len()));
         }
+    } else if model.bundled {
+        // The bundle is gone. The fast, offline, no-credential recovery is to
+        // reinstall, and saying so is more useful than naming a token for a
+        // 900 MB download when the installer is 200 MB away.
+        parts.push("Not installed".to_string());
+        parts.push("reinstall VaaniDesk to restore it".to_string());
     } else {
         parts.push("Not installed".to_string());
         parts.push(format!("{} to download", human_bytes(model.weights_bytes)));
@@ -938,7 +983,13 @@ fn describe(
     } else {
         parts.push("runs on CPU".to_string());
     }
-    if model.access.needs_token() {
+    // Only when a credential is actually on the path. For a bundled model it
+    // never is: the file is either present (nothing to fetch) or it is not, and
+    // reinstalling restores it without a credential and far faster than a
+    // 900 MB authenticated download. An unbundled gated model keeps the old
+    // behaviour exactly, which is what the token path must not regress into.
+    let needs_token = model.access.needs_token() && !model.bundled;
+    if needs_token {
         parts.push("needs a Hugging Face token".to_string());
     }
     parts.join(" · ")
@@ -1054,10 +1105,114 @@ mod tests {
         // 929,977,857 bytes of required files. The fp32 reference encoder is
         // excluded, which is the difference between 886.9 MiB and 2.5 GiB.
         assert_eq!(model.weights_bytes, 929_977_857);
-        assert!(d.contains("886.9 MiB"), "{d}");
         assert!(d.contains("MIT"), "{d}");
-        assert!(d.contains("Hugging Face token"), "{d}");
         assert!(d.contains("VRAM"), "{d}");
+        // SraVaani is bundled, so the absent case says "reinstall" rather than
+        // naming a token. Asserted because this is the *first* thing a user
+        // reads, and a token prompt here is the regression the mandate names.
+        assert!(d.contains("reinstall VaaniDesk"), "{d}");
+        assert!(!d.contains("Hugging Face token"), "{d}");
+    }
+
+    #[test]
+    fn a_bundled_model_never_mentions_a_token_on_the_first_run_path() {
+        // The three states a first-run or near-first-run user can be in, and the
+        // assertion that a credential is never named in any of them.
+        let m = Manifest::embedded().unwrap();
+        let model = m.model("sravaani-1.0-onnx").unwrap();
+        assert!(model.bundled, "the embedded manifest must mark it bundled");
+        assert!(
+            model.access.needs_token(),
+            "the upstream source is still gated, and the download path must keep working"
+        );
+
+        let found = |bytes: u64, partial: bool| DiscoveredModel {
+            id: model.id.clone(),
+            dir_name: model.dir.clone(),
+            root_kind: RootKind::Bundled,
+            root: PathBuf::from("app/models"),
+            dir: PathBuf::from("app/models/sravaani"),
+            files: Vec::new(),
+            unexpected: Vec::new(),
+            has_partial: partial,
+            on_disk_bytes: bytes,
+        };
+
+        // Present and complete: the normal first launch.
+        let installed = describe(model, Some(&found(929_977_857, false)), true, true, &[]);
+        assert!(installed.starts_with("Installed"), "{installed}");
+        assert!(installed.contains("included with VaaniDesk"), "{installed}");
+        assert!(!installed.contains("token"), "{installed}");
+
+        // Present but incomplete: the file was deleted, or the install was cut
+        // short. Still not a token problem.
+        let broken = describe(
+            model,
+            Some(&found(430_334_439, false)),
+            false,
+            true,
+            &["encoder.fp16.onnx".to_string()],
+        );
+        assert!(broken.starts_with("Not ready"), "{broken}");
+        assert!(!broken.contains("token"), "{broken}");
+
+        // Interrupted: still not a token problem.
+        let partial = describe(model, Some(&found(1_000, true)), false, true, &[]);
+        assert!(partial.contains("interrupted"), "{partial}");
+        assert!(!partial.contains("token"), "{partial}");
+    }
+
+    #[test]
+    fn an_unbundled_gated_model_still_asks_for_a_token() {
+        // The HF path must not regress for anyone installing a *different*
+        // model. A manifest entry that is not bundled keeps the old behaviour
+        // exactly, which is what this pins.
+        let m = Manifest::parse(
+            r#"{"schema_version":1,"models":[{
+              "id":"other","engine_id":"e","version":"1","display_name":"Other",
+              "description":"d","task":"asr","architecture":"a",
+              "access":"gated-token",
+              "license":{"spdx":"MIT","name":"MIT","url":"https://example.org/l"},
+              "source":{"kind":"huggingface","repo":"org/name"},
+              "languages":["hi"],"sample_rates":[16000],"size_bytes":4,
+              "files":[{"path":"w.onnx","role":"weights","bytes":4,
+                "sha256":"0000000000000000000000000000000000000000000000000000000000000000"}]
+            }]}"#,
+        )
+        .unwrap();
+        let model = m.model("other").unwrap();
+        assert!(!model.bundled);
+        let d = describe(model, None, false, false, &[]);
+        assert!(d.contains("Hugging Face token"), "{d}");
+        assert!(d.contains("4 B to download"), "{d}");
+    }
+
+    #[test]
+    fn a_bundled_model_with_no_downloadable_source_is_refused() {
+        // The recovery for a deleted models/ directory is a download, so a
+        // bundled model with a `bundled` source has none. Catching it at load
+        // time means the failure is a manifest error naming the model, not a
+        // "no download URL" message the first time somebody deletes the bundle.
+        let text = r#"{"schema_version":1,"models":[{
+          "id":"b","engine_id":"e","version":"1","display_name":"B",
+          "description":"d","task":"asr","architecture":"a","bundled":true,
+          "access":"open",
+          "license":{"spdx":"MIT","name":"MIT","url":"https://example.org/l"},
+          "source":{"kind":"bundled"},
+          "languages":["hi"],"sample_rates":[16000],"size_bytes":4,
+          "files":[{"path":"w.onnx","role":"weights","bytes":4,
+            "sha256":"0000000000000000000000000000000000000000000000000000000000000000"}]
+        }]}"#;
+        let e = Manifest::parse(text).unwrap_err();
+        assert!(
+            matches!(e, ManifestError::IncoherentBundle { ref id, .. } if id == "b"),
+            "{e}"
+        );
+        assert!(e.to_string().contains("bundled"), "{e}");
+
+        // The same entry without `bundled` is perfectly ordinary.
+        let ok = Manifest::parse(&text.replace("\"bundled\":true,", "")).unwrap();
+        assert!(!ok.model("b").unwrap().bundled);
     }
 
     #[test]

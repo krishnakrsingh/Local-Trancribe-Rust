@@ -229,7 +229,10 @@ fn an_unclaimed_directory_is_reported_with_its_size() {
 }
 
 #[test]
-fn the_user_root_wins_over_the_bundled_one_and_both_are_listed() {
+fn the_bundled_root_wins_over_the_user_one_and_both_are_listed() {
+    // Reversed from A7's user-first order by the zero-token mandate (A12): the
+    // distribution ships the weights, so a shipped copy that the installer
+    // staged outranks a copy in app data whose version nothing has checked.
     let t = TempDir::new("disc-prec");
     t.file("user/m1/weights.bin", 8);
     t.file("user/m1/fe/tables.bin", 16);
@@ -238,8 +241,44 @@ fn the_user_root_wins_over_the_bundled_one_and_both_are_listed() {
     let m = one_file_manifest();
     let d = discover::discover(&m, &roots(t.path()));
 
-    assert_eq!(d.copies("m1").len(), 2);
+    assert_eq!(d.copies("m1").len(), 2, "both copies are still listed");
+    assert_eq!(d.best("m1").unwrap().root_kind, RootKind::Bundled);
+}
+
+#[test]
+fn a_user_root_copy_is_found_when_no_bundle_exists() {
+    // The corollary that keeps the reversal honest: user is *second*, not
+    // removed. A user who downloads a model on a build with no bundle still gets
+    // it.
+    let t = TempDir::new("disc-prec-user");
+    t.file("user/m1/weights.bin", 8);
+    t.file("user/m1/fe/tables.bin", 16);
+    let m = one_file_manifest();
+    let d = discover::discover(&m, &roots(t.path()));
+    assert!(d.is_installed("m1"));
     assert_eq!(d.best("m1").unwrap().root_kind, RootKind::User);
+}
+
+#[test]
+fn a_bundle_beside_the_executable_is_searched_before_the_user_directory() {
+    // The end-to-end shape of the shipped product: `<app>/models/<id>/` is
+    // found with no environment variable, no setting, and no user directory.
+    let t = TempDir::new("disc-bundle-first");
+    t.file("app/models/m1/weights.bin", 8);
+    t.file("app/models/m1/fe/tables.bin", 16);
+    let m = one_file_manifest();
+    let r = ModelRoots::at(t.join("no-user-dir-here"), t.join("app/models"));
+    let d = discover::discover(&m, &r);
+
+    assert!(d.is_installed("m1"));
+    let found = d.best("m1").unwrap();
+    assert_eq!(found.root_kind, RootKind::Bundled);
+    assert_eq!(found.dir, t.join("app/models/m1"));
+    // And the user root is still *reported* as searched-and-missing, rather than
+    // skipped, so a diagnostic can distinguish "not shipped" from "not looked
+    // for".
+    let user = d.roots.iter().find(|r| r.kind == RootKind::User).unwrap();
+    assert!(!user.exists);
 }
 
 #[test]

@@ -1,16 +1,27 @@
 ; VaaniDesk installer (Inno Setup 6).
 ;
-; Owned by agent A8 (installer/**). Per-user install, no admin required:
+; Owned by A12 (installer/**). Per-user install, no admin required:
 ;   - PrivilegesRequired=lowest  -> HKCU registry, {localappdata} paths only.
 ;   - DefaultDirName {localappdata}\VaaniDesk (overrideable with /DIR=).
 ;   - Add/Remove Programs entry is automatic (Uninstallable=yes, HKCU uninstall key).
 ;
-; Layout (load-bearing, ADR-007/ADR-008): vaani.exe, vaani-cli.exe and
-; runtime\*.dll sit with runtime\ as a SUBDIRECTORY of the install root, all
-; DLLs FLAT inside it. cuDNN 9's cudnn64_9.dll LoadLibrary's its siblings by
-; bare name; nesting them deeper breaks GPU acceleration silently (CPU fallback
-; with no error). RuntimeLocation::discover finds <exe>\runtime first.
+; ---------------------------------------------------------------------------
+; LAYOUT. Load-bearing. Two rules, and both were arrived at the hard way:
 ;
+;   1. `models\` sits DIRECTLY BESIDE the executables, i.e. {app}\models\<dir>.
+;      `vaani_models::paths::default_bundled_dir` resolves the bundled root to
+;      <exe dir>\models before anything else, so the installed location is the
+;      first directory searched. Putting it anywhere else means a first-run user
+;      is told to download a model that is already in the next folder.
+;
+;   2. `runtime\*.dll` are FLAT inside runtime\. cuDNN 9's cudnn64_9.dll is a
+;      dispatcher that LoadLibrary's its ten siblings by bare name, and Windows
+;      only searches beside the executable. Nest them and GPU acceleration
+;      fails *silently* -- the app falls back to the CPU with no error, which
+;      reads as "the GPU does not work" rather than "you nested the files".
+;      `vaani_inference::RuntimeLocation::discover` finds <exe>\runtime first.
+;
+; ---------------------------------------------------------------------------
 ; File associations: one ProgId per kind (VaaniDesk.Audio / VaaniDesk.Video),
 ; registered under HKCU\Software\Classes from vaani_core::SUPPORTED_EXTENSIONS.
 ; "Open with VaaniDesk" verbs launch vaani.exe "%1".
@@ -38,24 +49,57 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; explicitly rather than inheriting a default (ADR-008).
 MinVersion=10.0.22000
 OutputBaseFilename=VaaniDesk-Setup-{#Version}-win-x64
-Compression=lzma2/max
+OutputDir=.
+; The distribution is ~1 GB mostly because the speech model is 887 MiB of
+; already-compressed fp16 weights. Solid LZMA2 spends a lot of time for very
+; little: it is why the CPU pack takes minutes. `fastlzma2` is the right trade
+; at this size, and the installer still ends up smaller than the ZIP because
+; it stores one copy rather than a directory entry per file.
+Compression=lzma2/fast
 SolidCompression=yes
+LZMANumBlockThreads=4
 UninstallDisplayName=VaaniDesk {#Version}
-; No LicenseFile: the repo ships no top-level LICENSE yet (see OPEN ISSUES in
-; the A8 report). The runtime redistributable licence stages as runtime\LICENSE.
+WizardStyle=modern
+DisableProgramGroupPage=yes
+; The third-party notice is shown in the wizard, not just installed: a user
+; redistributing this build should not have to go looking for the licence.
+LicenseFile={#StageDir}\licenses\NOTICE.md
 
 [Files]
-; Binaries (built by scripts/release/make-release.ps1 --release).
-Source: "{#StageDir}\vaani.exe"; DestDir: "{app}"; Flags: ignoreversion
+; --- binaries (built by scripts/release/make-release.ps1) ---
+Source: "{#StageDir}\vaani.exe";    DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\vaani-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
-; Runtime DLL manifest note: all DLLs FLAT in runtime\. Do not reorganise into
-; per-component subdirectories (see header comment).
+
+; --- ONNX Runtime, FLAT in runtime\ (see header comment) ---
 Source: "{#StageDir}\runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs
-Source: "{#StageDir}\runtime-manifest.json"; DestDir: "{app}\runtime"; Flags: ignoreversion
-; Pre-bundled production offline model files (100% offline immediately, zero tokens needed).
-; NOTE FOR AGENTS: This packaging is intentional (ADR-005/ADR-007 update). SraVaani-1.0 is MIT-licensed.
-; We bundle production weights (~930 MB) directly so the app operates 100% offline with zero setup.
+
+; --- the speech recognition model, 887 MiB, beside the executables ---
+; SraVaani 1.0 is MIT-licensed and is bundled deliberately: the product is
+; 100% offline and needs no token, no account and no network on first launch.
+; The full notice is in licenses\SraVaani-MIT-LICENSE.txt and is installed by
+; the `licenses\*` line below.
 Source: "{#StageDir}\models\*"; DestDir: "{app}\models"; Flags: ignoreversion recursesubdirs
+
+; --- third-party notices and the model licence, installed not just referenced ---
+Source: "{#StageDir}\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion
+
+; --- documentation, the checksum manifest, and the self-test ---
+Source: "{#StageDir}\OFFLINE-INSTALL.md";    DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StageDir}\vaani-dist.sha256";     DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StageDir}\vaani-dist.json";       DestDir: "{app}"; Flags: ignoreversion
+; The model registry, so the self-test can hash the 887 MiB against the sizes
+; and SHA-256s that only exist in this file. Without it `verify-install.ps1` on
+; a user's machine can confirm the weights are present but not that they are the
+; right ones -- and a silently-corrupt encoder is the right size and the wrong
+; bytes, which is exactly the case it exists to catch.
+Source: "{#StageDir}\vaani-model-registry.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StageDir}\verify-install.ps1";    DestDir: "{app}"; Flags: ignoreversion
+
+[Dirs]
+; Keep models\ in Add/Remove Programs so a user can see how much disk the
+; shipped model occupies, and so it is not silently swept up by "empty folder"
+; clean-up utilities.
+Name: "{app}\models"; Tasks: none
 
 [Icons]
 Name: "{group}\VaaniDesk"; Filename: "{app}\vaani.exe"
@@ -63,6 +107,33 @@ Name: "{autodesktop}\VaaniDesk"; Filename: "{app}\vaani.exe"; Tasks: desktopicon
 
 [Tasks]
 Name: desktopicon; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"
+; Check the install on completion. Off by default because it hashes 887 MiB and
+; takes most of a minute on a slow disk, and an install wizard that appears to
+; hang is worse than one that does not.
+Name: verifyinstall; Description: "Check the installation after setup (&verify model and runtime)"; GroupDescription: "After install:"; Flags: unchecked
+
+[Run]
+; Checked, not blocking, and off by default (see the task above). A missing or
+; damaged model is a fact the user can act on -- reinstall -- not a setup
+; failure, and failing the install here would leave them with nothing.
+;
+; Only the self-test runs. `vaani-cli doctor` was previously run here too, which
+; duplicated most of the same work and produced a second, less specific report
+; nobody could act on.
+Filename: "{app}\verify-install.ps1"; Parameters: "-ExpectRuntimeFlavour cpu"; Flags: runhidden; Tasks: verifyinstall; StatusMsg: "Checking the installation..."
+
+[Code]
+// Tell Explorer the associations changed so icons/verbs appear without a logoff.
+const
+  SHCNE_ASSOCCHANGED = $08000000;
+  SHCNF_IDLIST = $0000;
+procedure SHChangeNotify(wEventID: Integer; uFlags: Cardinal; dwItem1: Longint; dwItem2: Longint);
+  external 'SHChangeNotify@shell32.dll stdcall';
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0);
+end;
 
 [Registry]
 ; --- VaaniDesk.Audio ProgId (HKCU only: no admin) ---
@@ -94,21 +165,3 @@ Root: HKCU; Subkey: "Software\Classes\.mpeg"; ValueType: string; ValueData: "Vaa
 Root: HKCU; Subkey: "Software\Classes\.wmv"; ValueType: string; ValueData: "VaaniDesk.Video"; Flags: uninsdeletevalue
 Root: HKCU; Subkey: "Software\Classes\.flv"; ValueType: string; ValueData: "VaaniDesk.Video"; Flags: uninsdeletevalue
 Root: HKCU; Subkey: "Software\Classes\.ts"; ValueType: string; ValueData: "VaaniDesk.Video"; Flags: uninsdeletevalue
-
-[Run]
-; First thing after install: the verification surface (ADR-008). Checked, not
-; blocking: a missing runtime is a fact the user can act on, not a setup failure.
-Filename: "{app}\vaani-cli.exe"; Parameters: "doctor"; Flags: runhidden; StatusMsg: "Checking the installation..."
-
-[Code]
-// Tell Explorer the associations changed so icons/verbs appear without a logoff.
-const
-  SHCNE_ASSOCCHANGED = $08000000;
-  SHCNF_IDLIST = $0000;
-procedure SHChangeNotify(wEventID: Integer; uFlags: Cardinal; dwItem1: Longint; dwItem2: Longint);
-  external 'SHChangeNotify@shell32.dll stdcall';
-procedure CurStepChanged(CurStep: TSetupStep);
-begin
-  if CurStep = ssPostInstall then
-    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0);
-end;

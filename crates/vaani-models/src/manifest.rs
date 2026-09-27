@@ -50,6 +50,7 @@
 //!   "description": "...",
 //!   "task": "asr",
 //!   "architecture": "fastconformer-tdt-rnnt",
+//!   "bundled": true,
 //!   "access": "gated-token",
 //!   "license": { "spdx": "MIT", "name": "MIT", "url": "https://..." },
 //!   "source": { "kind": "huggingface", "repo": "org/name", "revision": "main" },
@@ -66,6 +67,40 @@
 //!   ]
 //! }
 //! ```
+//!
+//! # `bundled` and `access` are different questions
+//!
+//! `bundled: true` means **the application distribution ships this model's
+//! files**, under `<app>/models/<dir>/`. It says nothing about how the weights
+//! were originally obtained.
+//!
+//! `access` says what obtaining them *from the publisher* requires. `SraVaani` is
+//! both: the distribution ships the weights, and the upstream Hugging Face repo
+//! is gated behind a click-through. Recording only one of those two facts is how
+//! a settings panel ends up saying "needs a Hugging Face token" next to a model
+//! that is already on the user's disk — which is precisely the first-run
+//! experience the zero-token mandate exists to eliminate.
+//!
+//! The distinction is what lets both properties hold at once. [`Model::bundled`]
+//! suppresses the token prompt; [`Access`] and [`Source`] still fully describe
+//! the download, for anyone who deletes the bundle or wants a different model.
+//!
+//! # A bundled model must still be downloadable
+//!
+//! `bundled: true` combined with `Provider::Bundled` is a **configuration error**
+//! and the validator refuses the manifest ([`ManifestError::IncoherentBundle`]).
+//!
+//! The reason is not pedantry. [`crate::manager::ModelManager::install`]
+//! short-circuits when a complete copy is already present, so on a healthy
+//! machine the download path never runs and a missing source is invisible. It
+//! runs the first time somebody deletes `models/`, or on a build whose installer
+//! staged the models incorrectly, and the failure then surfaces as a confusing
+//! "no download URL" error instead of a download. A manifest that cannot
+//! describe a recovery is a manifest whose recovery nobody has ever run.
+//!
+//! The converse is *not* an error: `Provider::Direct` with `access: "open"`
+//! describes an unbundled model anyone may fetch anonymously, and that is a
+//! perfectly ordinary entry.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -511,6 +546,19 @@ pub struct Model {
     pub architecture_params: BTreeMap<String, String>,
     /// How to obtain it.
     pub access: Access,
+    /// Whether the application distribution ships this model's files.
+    ///
+    /// This is the field the zero-token mandate rests on, and it is separate
+    /// from [`Model::access`] on purpose: `SraVaani` is *both* bundled and
+    /// `GatedToken`, and each half answers a different question. `bundled`
+    /// answers "does the user already have this?" and therefore "must I ask for
+    /// a credential?". `access` answers "what does the publisher require, if
+    /// they had to fetch it?".
+    ///
+    /// When this is `true`, a credential is never requested on the path a
+    /// first-run user takes, because that path never downloads.
+    #[serde(default)]
+    pub bundled: bool,
     /// Its legal terms. Required.
     pub license: Licence,
     /// Where it is published.
@@ -836,6 +884,21 @@ pub enum ManifestError {
         /// The provider that has no template.
         provider: String,
     },
+    /// A model declared as shipped with the app whose source cannot download.
+    ///
+    /// See [`Model::bundled`]. The recovery for a deleted `models/` directory
+    /// is a download, so a bundled model with a `bundled`-only source has none.
+    #[error(
+        "model {id:?} is declared bundled but its source is {provider:?}, which cannot be \
+         downloaded; a bundled model needs a real source so a deleted models/ directory is \
+         recoverable"
+    )]
+    IncoherentBundle {
+        /// The model.
+        id: String,
+        /// The provider that cannot download.
+        provider: &'static str,
+    },
     /// A model with no languages, which the language picker cannot use.
     #[error("model {id:?} declares no languages")]
     NoLanguages {
@@ -956,6 +1019,8 @@ struct RawModel {
     #[serde(default)]
     architecture_params: BTreeMap<String, String>,
     access: Option<String>,
+    #[serde(default)]
+    bundled: bool,
     #[serde(alias = "licence")]
     license: Option<RawLicence>,
     source: Option<RawSource>,
@@ -1209,6 +1274,18 @@ impl RawModel {
             });
         }
 
+        // A model that ships with the app must still be describable as something
+        // the user could fetch, because `install` short-circuits while the
+        // bundle is intact and the download path only runs once somebody has
+        // deleted it. A bundled model with no source has no recovery, and a
+        // recovery that is not described is a recovery nobody has run.
+        if self.bundled && !source.provider.is_downloadable() {
+            return Err(ManifestError::IncoherentBundle {
+                id,
+                provider: source.provider.as_str(),
+            });
+        }
+
         Ok(Model {
             id,
             dir,
@@ -1220,6 +1297,7 @@ impl RawModel {
             architecture,
             architecture_params: self.architecture_params,
             access,
+            bundled: self.bundled,
             license,
             source,
             languages: self.languages,

@@ -1,37 +1,139 @@
-# VaaniDesk Windows x64 release pipeline (A8-owned: .github/workflows/**).
+# VaaniDesk Windows x64 pipeline (A12-owned: .github/workflows/**).
 #
-# Gates (fail the run before any artefact is built):
-#   cargo fmt -p vaani-cli -- --check
-#   cargo clippy -p vaani-cli --all-targets -- -D warnings
-#   cargo test -p vaani-cli
-# Then:
-#   cargo build --release -p vaani-cli --bins
-#   scripts/release/make-release.ps1 (portable ZIP + installer + SHA256SUMS)
-# Artefacts are uploaded as a CI artifact for inspection.
+# ---------------------------------------------------------------------------
+# WHY THIS FILE HAS TWO JOBS AND IS SPLIT WHERE IT IS
 #
-# Deliberately NOT here yet (ADR-007): no secrets, no publishing to GitHub
-# Releases, no winget manifest bump. Those arrive with the signing + publisher
-# decisions, not before.
+# The offline mandate means the repository no longer contains the thing the
+# product is made of. `models/` is gitignored, so a fresh `actions/checkout` has
+# no weights and no runtime. An earlier version of this workflow ran
+# `make-release.ps1` on every tag and, because the packager only *warned* when
+# the weights were missing, produced a green run and a plausible-looking
+# installer that could not transcribe. It also had no `if:` on the upload step,
+# so a 930 MB build artefact was uploaded whenever the workflow ran at all.
+#
+# So the split is by **what each job needs**, and the packaging job is
+# **refused** rather than degraded when its inputs are missing:
+#
+#   verify   -- needs nothing but the source. fmt, clippy, test. Runs on every
+#               push and every PR. This is the gate that can stay green.
+#   package  -- needs the 887 MB model bundle and the ONNX Runtime, neither of
+#               which is in the repository. Tag pushes and manual dispatch only.
+#               If the bundle URL is not configured it SKIPS with an explanation
+#               and a green run, because an unconfigured release host is not a
+#               broken build. It never uploads a green result for a package it
+#               did not build.
+#
+# The 930 MB of weights are a build input and are never committed, never cached
+# into this repository's Actions cache, and never uploaded as an artefact. The
+# only things uploaded are the compressed distribution, the installer and the
+# checksum files -- and only from a run that actually built them.
+#
+# ---------------------------------------------------------------------------
+# WHAT IS DELIBERATELY NOT HERE (unchanged from A8)
+#
+# No secrets, no publishing to GitHub Releases, no winget manifest. Those
+# arrive with the code-signing and publisher decisions, not before.
+# ---------------------------------------------------------------------------
 
-name: release
+name: windows-x64
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
   workflow_dispatch:
+    inputs:
+      runtime_flavour:
+        description: "Runtime to package: cpu (default) or gpu"
+        type: choice
+        default: cpu
+        options: [cpu, gpu]
+      force_package:
+        description: "Fail instead of skipping when the model bundle URL is not configured"
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
 
 jobs:
-  windows-x64:
+  # -------------------------------------------------------------------------
+  # The gate. No model, no runtime, no network beyond crates.io. This is the
+  # job that is allowed to be red.
+  # -------------------------------------------------------------------------
+  verify:
+    name: fmt, clippy, test
     runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust (pinned toolchain file)
+      - name: Install Rust (pinned by rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: verify-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: verify-${{ runner.os }}-
+
+      - name: fmt gate
+        run: cargo fmt --all --check
+        shell: powershell
+
+      - name: clippy gate
+        run: cargo clippy --workspace --all-targets -- -D warnings
+        shell: powershell
+
+      - name: test gate (release)
+        # Release, not debug. Two `vaani-media` cancellation tests passed in
+        # debug and failed in release: they slept 30 ms and then cancelled,
+        # racing a decoder that runs at 2400x real time. A green debug run on
+        # this repository does not mean what it appears to mean.
+        run: cargo test --workspace --release
+        shell: powershell
+
+      - name: The model manifest is internally consistent
+        # The one weights-dependent property that does not need the weights:
+        # the file list, the required/optional flags and the arithmetic. It is
+        # a unit test, and it is here because the packager reads the same file
+        # and a mismatch between the two is a broken release rather than a
+        # broken test.
+        run: cargo test -p vaani-models --test bundle --test manifest_data
+        shell: powershell
+
+  # -------------------------------------------------------------------------
+  # Packaging. Refuses to run without its inputs instead of producing a
+  # distribution that cannot transcribe.
+  # -------------------------------------------------------------------------
+  package:
+    name: package (${{ inputs.runtime_flavour || 'cpu' }})
+    needs: verify
+    # Tag pushes, and manual dispatch. Never on an ordinary branch push: this
+    # job's whole cost is the 887 MB bundle and the LZMA2 pass over it, and
+    # there is nothing to publish from a branch.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    env:
+      # The packager and this workflow must agree on where the output lands, and
+      # an empty `env.CARGO_TARGET_DIR` in the upload path is a silently
+      # mis-globbed artefact. Set once, here.
+      CARGO_TARGET_DIR: ${{ github.workspace }}\target
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.1
@@ -42,28 +144,140 @@ jobs:
         run: choco install innosetup --no-progress -y
         shell: powershell
 
-      - name: fmt gate (vaani-cli)
-        run: cargo fmt -p vaani-cli -- --check
-        shell: powershell
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: package-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: package-${{ runner.os }}-
 
-      - name: clippy gate (vaani-cli)
-        run: cargo clippy -p vaani-cli --all-targets -- -D warnings
+      # -------------------------------------------------------------------------
+      # The model bundle. A build input, fetched over HTTPS and verified
+      # against the checksums the packager itself compares to, so a corrupted
+      # or truncated download fails at packaging time rather than on a user's
+      # machine.
+      #
+      # `vars.VAANI_MODEL_BUNDLE_URL` is a repository variable, not a secret:
+      # it is a URL to a public or internal CDN object, not a credential. A
+      # self-hosted or air-gapped host can point it at an internal mirror. When
+      # it is unset the job skips -- see the next step.
+      # -------------------------------------------------------------------------
+      - name: Resolve the model bundle source
+        id: bundle
         shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $url = '${{ vars.VAANI_MODEL_BUNDLE_URL }}'
+          $force = '${{ inputs.force_package }}' -eq 'true'
+          if ([string]::IsNullOrWhiteSpace($url)) {
+            $msg = @"
+          VAANI_MODEL_BUNDLE_URL is not set, so the 887 MB SraVaani bundle cannot be
+          fetched and this run CANNOT produce a distribution.
 
-      - name: test gate (vaani-cli)
-        run: cargo test -p vaani-cli
+          That is expected in a repository that does not publish its model
+          weights -- they are a build input, deliberately not committed. Set the
+          repository variable to a URL serving a ZIP or a directory tree of the
+          seven required files:
+
+            Models/
+              vaani-models/manifests/registry.json
+              sravaani/encoder.fp16.onnx
+              sravaani/decoder_joint.onnx
+              sravaani/tokenizer.model
+              sravaani/mel_window.f32
+              sravaani/mel_fb.f32
+              sravaani/preproc.json
+              sravaani/config.json
+
+          The packager verifies every file's size and SHA-256 against the
+          manifest, so a wrong bundle fails here rather than shipping.
+
+          The `verify` job ran and passed; only the packaging step is skipped.
+          "@@
+            if ($force) { Write-Error $msg }
+            else {
+              Write-Host "::notice::$msg"
+              Write-Host "skip=true" >> $env:GITHUB_OUTPUT
+            }
+          }
+          else {
+            Write-Host "bundle_url=$url" >> $env:GITHUB_OUTPUT
+            Write-Host "skip=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Fetch and unpack the model bundle
+        if: steps.bundle.outputs.skip == 'false'
         shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP 'models.zip'
+          Invoke-WebRequest -Uri '${{ steps.bundle.outputs.bundle_url }}' -OutFile $zip -UseBasicParsing
+          Write-Host ("fetched {0:N1} MiB" -f ((Get-Item $zip).Length / 1MB))
+          $dest = Join-Path $env:RUNNER_TEMP 'models'
+          Expand-Archive -LiteralPath $zip -DestinationPath $dest -Force
+          # Accept either a tree rooted at the model directory or one with a
+          # wrapper directory, because both are reasonable ways to publish it.
+          $sravaani = Get-ChildItem -LiteralPath $dest -Recurse -Directory -Filter 'sravaani' |
+            Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'encoder.fp16.onnx') } |
+            Select-Object -First 1
+          if (-not $sravaani) { throw "The bundle contains no sravaani/ directory with encoder.fp16.onnx." }
+          "model_source=$($sravaani.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Stage portable ZIP + installer + checksums
-        run: powershell -ExecutionPolicy Bypass -File scripts/release/make-release.ps1
+      - name: Fetch the ONNX Runtime
+        if: steps.bundle.outputs.skip == 'false'
+        # 1.16 GiB of archives for the GPU flavour, 280 MB for the CPU one. The
+        # script is frozen and hash-verifies every download against pins in
+        # NVIDIA's and Microsoft's own published manifests.
         shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & powershell -NoProfile -ExecutionPolicy Bypass -File scripts\fetch_runtime.ps1
+          "runtime_source=$env:GITHUB_WORKSPACE\runtime" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Upload artefacts
+      - name: Package
+        if: steps.bundle.outputs.skip == 'false'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $flavour = if ('${{ inputs.runtime_flavour }}') { '${{ inputs.runtime_flavour }}' } else { 'cpu' }
+          & powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release\make-release.ps1 `
+            -RuntimeFlavour $flavour `
+            -ModelSource $env:model_source `
+            -RuntimeSource $env:runtime_source
+          if ($LASTEXITCODE -ne 0) { throw "make-release.ps1 failed with $LASTEXITCODE" }
+
+      - name: Report the size of what was built
+        if: steps.bundle.outputs.skip == 'false'
+        shell: powershell
+        run: |
+          $pkg = Join-Path $env:CARGO_TARGET_DIR 'release-pkg'
+          $stage = Get-ChildItem -LiteralPath $pkg -Directory -Filter 'VaaniDesk-*' | Select-Object -First 1
+          if ($stage) {
+            $bytes = (Get-ChildItem -LiteralPath $stage.FullName -Recurse -File | Measure-Object -Property Length -Sum).Sum
+            "distribution_bytes=$bytes" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            Write-Host ("distribution: {0:N1} MiB unpacked" -f ($bytes / 1MB))
+          }
+          Get-ChildItem -LiteralPath $pkg -File | ForEach-Object {
+            "{0,12:N1} MiB  {1}" -f ($_.Length / 1MB), $_.Name
+          }
+
+      # -------------------------------------------------------------------------
+      # Upload. Only compressed distributions and checksums -- never the weights,
+      # never the unpacked stage tree. `if-no-files-found: error` is what makes a
+      # package job that silently did nothing impossible.
+      # -------------------------------------------------------------------------
+      - name: Upload the distribution
+        if: steps.bundle.outputs.skip == 'false'
         uses: actions/upload-artifact@v4
         with:
-          name: VaaniDesk-windows-x64
+          name: VaaniDesk-${{ inputs.runtime_flavour || 'cpu' }}-win-x64
           path: |
-            target/release-pkg/*.zip
-            target/release-pkg/*.exe
-            target/release-pkg/SHA256SUMS
+            ${{ env.CARGO_TARGET_DIR }}\release-pkg\*.zip
+            ${{ env.CARGO_TARGET_DIR }}\release-pkg\*.exe
+            ${{ env.CARGO_TARGET_DIR }}\release-pkg\SHA256SUMS
           if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
