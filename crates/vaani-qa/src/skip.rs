@@ -62,6 +62,21 @@ pub enum Requirement {
     PrivateClip,
     /// Operator-supplied real container samples (`VAANI_QA_MEDIA_DIR`).
     RealContainers,
+    /// The operator has not opted into the opt-in live ASR gate.
+    ///
+    /// The fifth value exists because `tests/asr_live.rs` is opt-in for a reason
+    /// that is not a machine fact: a 40-second decode costs about 35 seconds on
+    /// the CPU execution provider, which is a large fraction of this suite's
+    /// runtime. That is a *policy* decision, so it belongs in the closed set
+    /// where it is printed and recorded rather than in an `if` that returns
+    /// quietly.
+    ///
+    /// The first version of that test did exactly the quiet thing -- an early
+    /// `return` behind an unset environment variable -- and a test run reported
+    /// "4 passed" for four tests that never ran. That is the exact disease this
+    /// module exists to prevent, and it was reintroduced by the very crate that
+    /// wrote the rules.
+    OptInLiveAsr,
 }
 
 impl Requirement {
@@ -72,6 +87,7 @@ impl Requirement {
             Self::OnnxRuntime => "onnx-runtime",
             Self::PrivateClip => "private-clip",
             Self::RealContainers => "real-containers",
+            Self::OptInLiveAsr => "opt-in-live-asr",
         }
     }
 
@@ -83,6 +99,9 @@ impl Requirement {
             Self::OnnxRuntime => "run scripts\\fetch_runtime.ps1",
             Self::PrivateClip => "place the development recording at scratch\\clip.wav",
             Self::RealContainers => "set VAANI_QA_MEDIA_DIR to a folder of sample media",
+            Self::OptInLiveAsr => {
+                "set $env:VAANI_QA_RUNTIME_DLL to the onnxruntime.dll and re-run with --nocapture"
+            }
         }
     }
 }
@@ -100,6 +119,7 @@ pub struct Environment {
     weights_missing: Vec<String>,
     private_clip: Option<PathBuf>,
     real_containers: Option<PathBuf>,
+    live_asr_opt_in: Option<PathBuf>,
 }
 
 impl Environment {
@@ -121,6 +141,7 @@ impl Environment {
             weights_missing: artifacts.missing().to_vec(),
             private_clip: private_clip(),
             real_containers: std::env::var_os("VAANI_QA_MEDIA_DIR").map(PathBuf::from),
+            live_asr_opt_in: std::env::var_os("VAANI_QA_RUNTIME_DLL").map(PathBuf::from),
         }
     }
 
@@ -150,6 +171,20 @@ impl Environment {
         self.private_clip.as_deref()
     }
 
+    /// The `onnxruntime.dll` the operator pointed the live ASR gate at, if any.
+    ///
+    /// The variable names a **file**, not a directory, and that is deliberate: it
+    /// is a test-only knob added because
+    /// `vaani_inference::RuntimeLocation::discover` cannot find the runtime when
+    /// the build's `CARGO_TARGET_DIR` lives outside the repository. See
+    /// `vaani_qa::conformance::check_export_stage` for the same shape of
+    /// "library and caller disagree about a convenience" and OPEN ISSUES for
+    /// the defect itself.
+    #[must_use]
+    pub fn live_asr_opt_in(&self) -> Option<&Path> {
+        self.live_asr_opt_in.as_deref()
+    }
+
     /// The operator-supplied real-container directory, if set.
     pub fn real_containers(&self) -> Option<&Path> {
         self.real_containers.as_deref()
@@ -164,6 +199,7 @@ impl Environment {
             Requirement::RealContainers => {
                 self.real_containers.as_ref().is_some_and(|d| d.is_dir())
             }
+            Requirement::OptInLiveAsr => self.live_asr_opt_in.is_some(),
         }
     }
 
@@ -195,6 +231,9 @@ impl Environment {
             }
             Requirement::RealContainers => {
                 "VAANI_QA_MEDIA_DIR is unset or is not a directory".to_owned()
+            }
+            Requirement::OptInLiveAsr => {
+                "VAANI_QA_RUNTIME_DLL is unset, so the opt-in live decode did not run".to_owned()
             }
         }
     }
@@ -253,11 +292,12 @@ impl Environment {
 }
 
 /// Every [`Requirement`], for tests that want to iterate the skip policy itself.
-pub const ALL_REQUIREMENTS: [Requirement; 4] = [
+pub const ALL_REQUIREMENTS: [Requirement; 5] = [
     Requirement::ModelWeights,
     Requirement::OnnxRuntime,
     Requirement::PrivateClip,
     Requirement::RealContainers,
+    Requirement::OptInLiveAsr,
 ];
 
 /// Where `scratch/clip.wav` is expected, relative to the repository root.
@@ -412,17 +452,36 @@ mod tests {
     fn a_satisfied_requirement_never_skips() {
         // The real clip is absent in CI and present on the developer machine;
         // whichever it is, `require` must agree with `satisfies` exactly.
+        //
+        // The ledger is read by *filtering on this test's own name*, never by
+        // counting. The first version compared `skip_count_in_process()` before
+        // and after, which is a race: the ledger is process-wide, and a test on
+        // another thread taking its own skip between the two reads makes the
+        // count differ. It failed roughly one run in six, which is the worst
+        // possible failure rate — a flake that looks like a policy bug.
         let env = Environment::get();
+        let mine = |entries: &[(String, &'static str, String)]| {
+            entries
+                .iter()
+                .filter(|(t, _, _)| t == "skip_policy_selftest")
+                .count()
+        };
         for r in ALL_REQUIREMENTS {
-            let before = skip_count_in_process();
+            let before = mine(&skipped_in_process());
             let guard = require("skip_policy_selftest", r);
+            let after = mine(&skipped_in_process());
             if env.satisfies(r) {
                 assert!(guard.is_none(), "{} is satisfied but skipped", r.slug());
-                assert_eq!(skip_count_in_process(), before);
+                assert_eq!(after, before, "a satisfied requirement recorded a skip");
             } else {
                 let g = guard.expect("an unmet requirement must skip");
                 assert_eq!(g.requirement(), r);
-                assert_eq!(skip_count_in_process(), before + 1);
+                assert!(
+                    after > before,
+                    "{} is unmet but nothing was recorded, so the run would not say what did \
+                     not happen",
+                    r.slug()
+                );
             }
         }
     }

@@ -80,6 +80,28 @@ fn sixty_seconds_of_digital_silence_produces_no_speech_and_no_chunks() {
     );
     let chunks = Chunker::new(ChunkPolicy::default()).plan(&timeline, audio.duration());
     assert!(chunks.is_empty(), "silence must not produce ASR chunks");
+
+    // The reported stats are a second, independent account of the same decision,
+    // and they are what the UI shows. Asserting them here is what gives the
+    // `speech_frames` counter teeth: without this assertion the counter could be
+    // computed from any threshold, including one that accepts every frame, and
+    // no test in this file would notice -- a gap the mutation harness found by
+    // mutating the counter's own threshold and watching the suite stay green.
+    let stats = v.stats();
+    assert_eq!(
+        stats.speech_frames, 0,
+        "stats claim {} speech frames on digital silence",
+        stats.speech_frames
+    );
+    assert_eq!(
+        stats.gated_frames, 0,
+        "stats claim {} gated frames on digital silence",
+        stats.gated_frames
+    );
+    assert!(
+        stats.frames > 0,
+        "the silence run analysed no frames, so the assertions above prove nothing"
+    );
 }
 
 #[test]

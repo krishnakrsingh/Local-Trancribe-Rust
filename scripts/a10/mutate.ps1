@@ -49,6 +49,28 @@ $targetDir = if ($env:VAANI_CARGO_TARGET_DIR) { $env:VAANI_CARGO_TARGET_DIR }
              else { Join-Path ([IO.Path]::GetTempPath()) 'vaani-qa-mutate' }
 $cargo = if ($env:VAANI_CARGO) { $env:VAANI_CARGO } else { 'cargo' }
 
+# Resolve cargo to a real executable before mutating anything.
+#
+# The first version took `$env:VAANI_CARGO` else the bare word 'cargo' and
+# invoked it. Under `powershell -NoProfile -File`, `~/.cargo/bin` is not on PATH,
+# so every mutation failed with CommandNotFoundException -- and the script then
+# printed "0 mutations, 0 survived" followed by "Every mutation was caught."
+# A mutation run that executed nothing reported perfect success, which is the
+# single most damaging thing a mutation harness can do: it manufactures the
+# confidence the reader is relying on. Fail at startup instead.
+if ($cargo -eq 'cargo' -and -not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+    $guess = Join-Path $HOME '.cargo\bin\cargo.exe'
+    if (Test-Path -LiteralPath $guess) {
+        $cargo = $guess
+        Write-Host "  cargo:     $cargo (resolved from ~\.cargo\bin; not on PATH)"
+    } else {
+        throw "cargo is not on PATH and not at $guess. Set VAANI_CARGO to the cargo executable. Refusing to run: a mutation run that checks nothing must not report success."
+    }
+}
+$probe = try { & $cargo --version 2>&1 } catch { "cannot execute '$cargo': $($_.Exception.Message)" }
+if ($probe -notmatch '^cargo ') { throw "cannot run '$cargo --version': $probe" }
+Write-Host "  cargo:     $cargo ($probe)"
+
 # --- the mutations ----------------------------------------------------------
 # `find` must occur EXACTLY once in `file`. A mutation whose anchor is missing or
 # ambiguous aborts rather than running the test against unmodified code, because
@@ -137,6 +159,26 @@ $mutations = @(
         why     = 'The source name comes from the media file, which a user can call anything. This is the one place where a bug is a security bug.'
     }
     @{
+        # The companion to the mutation above.
+        #
+        # Disabling the sanitiser alone was survivable, because
+        # `writer::assert_inside` independently refuses any path whose canonical
+        # parent is not the directory the user chose. That is defence in depth
+        # working, but it left the suite unable to say *which* layer held. This
+        # mutation disables the containment check instead, so each layer is now
+        # caught on its own and neither is load-bearing alone.
+        #
+        # The test to use is the same one, because it asserts the outcome that
+        # both layers exist to produce: nothing lands outside the directory.
+        slug    = 'export-skips-the-containment-check'
+        file    = 'crates/vaani-export/src/writer.rs'
+        find    = '    if got == wanted {'
+        broken  = '    if true || got == wanted { // MUTATION: every path is inside the directory'
+        test    = 'export_robustness'
+        filter  = 'a_crafted_source_name_cannot_escape_the_directory_the_user_chose'
+        why     = 'The last line of defence against a crafted source name. If this is the only check that fails, the sanitiser is the only thing preventing a write outside the directory the user chose.'
+    }
+    @{
         slug    = 'storage-forgets-the-segment-ids'
         file    = 'crates/vaani-storage/src/transcripts.rs'
         find    = @('                id: &seg.id,', '                ordinal: ordinal as i64,')
@@ -146,13 +188,29 @@ $mutations = @(
         why     = 'A segment with no id cannot be addressed, so every later edit by id silently edits nothing.'
     }
     @{
-        slug    = 'pipeline-ignores-a-pre-flight-cancel'
-        file    = 'crates/vaani-app/src/orchestrator.rs'
-        find    = @('    let child = cancel.child();', '        if child.is_cancelled() {')
-        broken  = @('    let child = cancel.child();', '        if false && child.is_cancelled() { // MUTATION: ignore the pre-flight cancel')
+        # Replacing the orchestrator's own pre-flight check with `false &&` was
+        # the first version of this mutation, and it survived. It survived for a
+        # good reason and a bad one, and the bad reason is what this entry now
+        # exists to record: `run_job` consults the token at three separate points
+        # (the pre-flight gate, the stage loop, and the post-stage gate), so
+        # disabling one leaves two, and the job is still cancelled promptly. A
+        # surviving mutation means "no test can see this", and here the truth
+        # was "no single test can see this" -- which is defence in depth working,
+        # not a gap in the suite.
+        #
+        # So the mutation moved down to the one place every check funnels
+        # through: `CancelToken::is_cancelled`. Ignoring the flag *at the source*
+        # is the mutation that actually represents "a user who pressed Stop is
+        # never told so". It is a single-occurrence anchor, and it must be
+        # caught by the same pre-flight test -- if that test still passes, the
+        # cancellation coverage is fake.
+        slug    = 'cancel-token-ignores-the-flag'
+        file    = 'crates/vaani-core/src/job.rs'
+        find    = '        self.flag.load(std::sync::atomic::Ordering::SeqCst)'
+        broken  = '        false && self.flag.load(std::sync::atomic::Ordering::SeqCst) // MUTATION: the flag is never read'
         test    = 'pipeline_integration'
         filter  = 'cancel_before_the_job_starts_is_clean'
-        why     = 'A pipeline that ignores a pre-flight cancel decodes a whole 14-minute recording for a user who pressed Stop.'
+        why     = 'A pipeline that ignores a cancel decodes a whole recording for a user who pressed Stop. Every check in the orchestrator funnels through this one read, so a test that passes against this is not testing cancellation at all.'
     }
     @{
         slug    = 'golden-declares-the-wrong-valid-frames'
@@ -287,11 +345,19 @@ foreach ($r in $results) {
     $colour = switch ($r.outcome) { 'caught' { 'Green' } 'survived' { 'Red' } default { 'Yellow' } }
     Write-Host ("{0,-8} {1,-44} {2}" -f $r.outcome.ToUpper(), $r.slug, $r.detail) -ForegroundColor $colour
 }
+$caught = @($results | Where-Object { $_.outcome -eq 'caught' })
 $survived = @($results | Where-Object { $_.outcome -eq 'survived' })
 $errored = @($results | Where-Object { $_.outcome -eq 'error' })
 Write-Host ''
-Write-Host "$($results.Count) mutations, $($survived.Count) survived, $($errored.Count) could not be applied."
+Write-Host "$($results.Count) mutations, $($caught.Count) caught, $($survived.Count) survived, $($errored.Count) could not be applied."
 
+# Every selected mutation must have produced a verdict. This is the check that
+# would have caught the bare-`cargo` bug above: it ran nothing, so nothing
+# reported, and the old summary counted the empty result as success.
+if ($results.Count -ne $selected.Count) {
+    Write-Host "Only $($results.Count) of $($selected.Count) mutations produced a verdict. Refusing to summarise a partial run as a pass." -ForegroundColor Red
+    exit 3
+}
 if ($survived.Count -gt 0) {
     Write-Host 'A survived mutation is a test that passes against broken code.' -ForegroundColor Red
     exit 1
@@ -300,4 +366,4 @@ if ($errored.Count -gt 0) {
     Write-Host 'An errored mutation proves nothing either way; fix the anchor.' -ForegroundColor Red
     exit 2
 }
-Write-Host 'Every mutation was caught.' -ForegroundColor Green
+Write-Host "Every one of the $($results.Count) mutations was caught." -ForegroundColor Green

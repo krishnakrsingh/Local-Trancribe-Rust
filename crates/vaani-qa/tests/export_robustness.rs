@@ -361,6 +361,41 @@ fn a_crafted_source_name_cannot_escape_the_directory_the_user_chose() {
             "{hostile} escaped the target directory to {}",
             written.path.display()
         );
+
+        // The outcome above is protected by two independent layers: the file
+        // name is sanitised, and the writer separately refuses any path whose
+        // parent is not the chosen directory. Asserting only the outcome means
+        // a test cannot tell which layer did the work -- the mutation harness
+        // found this by disabling the sanitiser, watching the suite stay green,
+        // and correctly concluding that nothing here pins the *mechanism*.
+        //
+        // So pin the mechanism too. The name the writer chose must be a single
+        // path component: no separator, no parent reference, and it must still
+        // carry the hostile input's own characters, because a sanitiser that
+        // silently produced a constant would satisfy every assertion above.
+        let chosen = written
+            .path
+            .file_name()
+            .expect("a file name")
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            !chosen.contains('/') && !chosen.contains('\\'),
+            "{hostile} produced the multi-component name {chosen:?}"
+        );
+        assert!(
+            !chosen.contains(".."),
+            "{hostile} produced the name {chosen:?}, which still contains a parent reference"
+        );
+        assert!(
+            !chosen.is_empty() && chosen != "." && chosen != "..",
+            "{hostile} produced the empty or degenerate name {chosen:?}"
+        );
+        assert!(
+            chosen.contains("evil"),
+            "{hostile} produced {chosen:?}, which discarded the source name entirely rather \
+             than sanitising it"
+        );
     }
     // And nothing landed outside.
     let parent = dir.path().parent().expect("a parent");

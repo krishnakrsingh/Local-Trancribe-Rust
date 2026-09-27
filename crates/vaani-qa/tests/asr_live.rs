@@ -33,7 +33,6 @@
 //! provider. That is deliberate: a CPU run is reproducible, and a 40-second
 //! chunk encodes in about 16 s here.
 
-use std::path::PathBuf;
 use std::time::Instant;
 
 use vaani_asr::engine::{AsrEngine, AudioChunk};
@@ -42,24 +41,13 @@ use vaani_core::{CancelToken, Language, Time};
 use vaani_qa::fixtures;
 use vaani_qa::skip::{self, Requirement};
 
-/// Set `VAANI_QA_RUNTIME_DLL` to run this file.
-fn forced_runtime() -> Option<PathBuf> {
-    let dll = std::env::var_os("VAANI_QA_RUNTIME_DLL").map(PathBuf::from)?;
-    if dll.is_file() {
-        return Some(dll);
-    }
-    skip::skip(
-        "asr_live",
-        Requirement::OnnxRuntime,
-        format!(
-            "VAANI_QA_RUNTIME_DLL points at {}, which is not a file",
-            dll.display()
-        ),
-    );
-    None
-}
-
 /// Whether the harness may run the live decode, and why not if it may not.
+///
+/// Every early return goes through `skip::require`, which prints and records.
+/// The first version of this file returned `None` from a helper when
+/// `VAANI_QA_RUNTIME_DLL` was unset, and a test run then reported "4 passed"
+/// for four tests that never ran — the exact disease `vaani_qa::skip` exists to
+/// prevent, reintroduced by the crate that wrote it.
 fn gate(test: &str) -> Option<EngineArtifacts> {
     if skip::require(test, Requirement::ModelWeights).is_some() {
         return None;
@@ -67,9 +55,26 @@ fn gate(test: &str) -> Option<EngineArtifacts> {
     if skip::require(test, Requirement::OnnxRuntime).is_some() {
         return None;
     }
-    // `gate` also has to confirm the operator's override points at a real DLL,
-    // otherwise the skip would print a remedy for a machine that is fine.
-    let _dll = forced_runtime()?;
+    if skip::require(test, Requirement::OptInLiveAsr).is_some() {
+        return None;
+    }
+    // The opt-in is satisfied, so the variable is set; confirm it names a real
+    // DLL rather than printing a remedy for a machine that is fine.
+    let env = skip::Environment::get();
+    let dll = env
+        .live_asr_opt_in()
+        .expect("satisfied means VAANI_QA_RUNTIME_DLL is set");
+    if !dll.is_file() {
+        skip::skip(
+            test,
+            Requirement::OnnxRuntime,
+            format!(
+                "VAANI_QA_RUNTIME_DLL points at {}, which is not a file",
+                dll.display()
+            ),
+        );
+        return None;
+    }
     Some(vaani_asr::artifacts_in(&vaani_asr::default_dir()))
 }
 
