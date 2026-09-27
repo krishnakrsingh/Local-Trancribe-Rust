@@ -20,5 +20,12 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
 
+# Test-only. `tempfile` is already in `[workspace.dependencies]` at version 3, so
+# this adds no new third-party crate; it is here because the integration tests
+# synthesise every fixture in a temporary file and must not be able to collide
+# with, or leave behind, anything on the developer's machine.
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [lints]
 workspace = true
