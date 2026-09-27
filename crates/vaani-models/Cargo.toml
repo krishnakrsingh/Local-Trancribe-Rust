@@ -20,6 +20,8 @@ hex = { workspace = true }
 dirs = { workspace = true }
 url = { workspace = true }
 bytes = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
 
 [lints]
 workspace = true
