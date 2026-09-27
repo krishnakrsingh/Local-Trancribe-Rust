@@ -1,0 +1,69 @@
+# VaaniDesk Windows x64 release pipeline (A8-owned: .github/workflows/**).
+#
+# Gates (fail the run before any artefact is built):
+#   cargo fmt -p vaani-cli -- --check
+#   cargo clippy -p vaani-cli --all-targets -- -D warnings
+#   cargo test -p vaani-cli
+# Then:
+#   cargo build --release -p vaani-cli --bins
+#   scripts/release/make-release.ps1 (portable ZIP + installer + SHA256SUMS)
+# Artefacts are uploaded as a CI artifact for inspection.
+#
+# Deliberately NOT here yet (ADR-007): no secrets, no publishing to GitHub
+# Releases, no winget manifest bump. Those arrive with the signing + publisher
+# decisions, not before.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (pinned toolchain file)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - name: Install Inno Setup 6
+        run: choco install innosetup --no-progress -y
+        shell: powershell
+
+      - name: fmt gate (vaani-cli)
+        run: cargo fmt -p vaani-cli -- --check
+        shell: powershell
+
+      - name: clippy gate (vaani-cli)
+        run: cargo clippy -p vaani-cli --all-targets -- -D warnings
+        shell: powershell
+
+      - name: test gate (vaani-cli)
+        run: cargo test -p vaani-cli
+        shell: powershell
+
+      - name: Stage portable ZIP + installer + checksums
+        run: powershell -ExecutionPolicy Bypass -File scripts/release/make-release.ps1
+        shell: powershell
+
+      - name: Upload artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: VaaniDesk-windows-x64
+          path: |
+            target/release-pkg/*.zip
+            target/release-pkg/*.exe
+            target/release-pkg/SHA256SUMS
+          if-no-files-found: error

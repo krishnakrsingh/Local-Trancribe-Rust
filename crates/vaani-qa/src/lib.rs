@@ -11,6 +11,17 @@
 //! answer per implementation rather than a bespoke test written each time.
 //!
 //! Read `docs/agent/PARALLEL_OWNERSHIP.md` before the first edit.
+//!
+//! # Modules
+//!
+//! * [`conformance`] — the four stage traits plus `run_all_conformance()`.
+//! * [`fixtures`] — the tiny synthetic WAV writer. No binary is committed and
+//!   no network is touched; every byte of audio under test is synthesised here
+//!   from first principles (PCM S16 WAV only).
+
+pub mod conformance;
+pub mod fixtures;
+pub mod skip;
 
 /// Crate version, from the manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

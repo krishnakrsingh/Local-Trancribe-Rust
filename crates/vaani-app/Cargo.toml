@@ -1,0 +1,31 @@
+[package]
+name = "vaani-app"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+description = "The A2 job pipeline for VaaniDesk: stage orchestration and the UI backend adapter."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+vaani-core = { workspace = true }
+vaani-media = { workspace = true }
+vaani-vad = { workspace = true }
+vaani-diarization = { workspace = true }
+vaani-asr = { workspace = true }
+vaani-inference = { workspace = true }
+vaani-storage = { workspace = true }
+vaani-export = { workspace = true }
+vaani-models = { workspace = true }
+vaani-ui = { workspace = true }
+serde = { workspace = true }
+crossbeam-channel = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }
+dirs = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

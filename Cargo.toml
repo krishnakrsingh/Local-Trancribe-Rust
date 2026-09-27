@@ -10,7 +10,9 @@ members = [
     "crates/vaani-storage",
     "crates/vaani-export",
     "crates/vaani-models",
+    "crates/vaani-app",
     "crates/vaani-cli",
+    "crates/vaani-bench",
     "crates/vaani-ui",
     "crates/vaani-qa",
 ]
