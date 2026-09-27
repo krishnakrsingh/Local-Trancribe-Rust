@@ -1276,15 +1276,16 @@ mod tests {
             &BlockWeights::default(),
             &MinSpread::default(),
         );
-        // Every mean-normalised dimension is gone.
-        for (j, r0) in rows[0].iter().enumerate() {
+        // Every mean-normalised dimension is gone. Bounded at `total`, not the
+        // row's own length: `normalise_in_place` has already appended the
+        // carrier, and the carrier is supposed to be there.
+        for (j, r0) in rows[0][..layout.total].iter().enumerate() {
             if layout.is_absolute(j) {
                 continue;
             }
             assert!(
                 r0.abs() < 1e-6,
-                "dimension {j} should have been dropped, got {}",
-                rows[0][j]
+                "dimension {j} should have been dropped, got {r0}"
             );
         }
         // Pitch kept its absolute value, shifted by the fixed reference and
