@@ -603,6 +603,26 @@ fn export_transcript(
         ExportTarget::File(out.to_path_buf())
     };
 
+    // A `Directory` target that does not exist yet is the normal case, not a
+    // mistake: a save dialog hands back a fresh folder, and
+    // `vaani transcribe clip.wav --out exports/` is the documented invocation.
+    // `vaani_export` deliberately does not build a directory tree (a typed `File`
+    // path in a missing folder should still fail rather than silently invent
+    // one), so the creation belongs to the caller that chose to interpret the
+    // argument as a directory. `vaani-app`'s export stage already does this;
+    // the CLI's pipeline did not, so `--out <new dir>` failed with a bare
+    // "The system cannot find the path specified" after the whole 14-minute job
+    // had already been transcribed.
+    if let ExportTarget::Directory(dir) = &target
+        && !dir.is_dir()
+    {
+        std::fs::create_dir_all(dir).map_err(|e| {
+            vaani_core::err::export_failed()
+                .with_cause(format!("could not create {}: {e}", dir.display()))
+                .with_recovery("Pick an existing folder, or create this one first.")
+        })?;
+    }
+
     if format.eq_ignore_ascii_case("all") {
         return Ok(vaani_export::export_all(
             transcript,
@@ -672,6 +692,38 @@ mod tests {
             "unexpected code: {}",
             e.code().as_str()
         );
+    }
+
+    #[test]
+    fn exporting_into_a_directory_that_does_not_exist_yet_creates_it() {
+        // The first real end-to-end run on the 14-minute clip failed *after* the
+        // whole job, with `os error 3`, because `--out some/new/folder` names a
+        // directory that no code had created. The CLI is the production path, so
+        // it is the CLI that has to do it.
+        let root = vaani_storage::testing::TempDir::new("export-new-dir");
+        let out = root.join("new-folder");
+        assert!(!out.exists());
+
+        let t = vaani_storage::fixtures::transcript(7, 4);
+        let written = export_transcript(&t, Path::new("standup.m4a"), &out, "all", false).unwrap();
+
+        assert_eq!(written.len(), vaani_export::ExportFormat::ALL.len());
+        for p in &written {
+            assert!(p.is_file(), "{} was not written", p.display());
+            assert_eq!(p.parent().unwrap(), out.as_path());
+        }
+    }
+
+    #[test]
+    fn a_typed_file_path_in_a_missing_folder_still_fails_rather_than_guessing() {
+        // The mirror image of the test above, and deliberately unchanged: a
+        // user who types `out/subs.srt` and has no `out/` has made a typo, and
+        // silently building a tree from one hides the next one.
+        let root = vaani_storage::testing::TempDir::new("export-typo");
+        let out = root.join("typo/subs.srt");
+        let t = vaani_storage::fixtures::transcript(7, 2);
+        let e = export_transcript(&t, Path::new("standup.m4a"), &out, "srt", false).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::ExportFailed);
     }
 
     #[test]

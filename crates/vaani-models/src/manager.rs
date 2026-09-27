@@ -822,7 +822,18 @@ impl ModelManager {
 
     fn require_model(&self, id: &str) -> vaani_core::Result<&Model> {
         self.manifest.model(id).ok_or_else(|| {
-            vaani_core::err::internal()
+            // `model_unavailable`, not `internal`. The id here is whatever the
+            // user typed into `--model` or the settings picker, so an id that is
+            // not in the manifest is something *they* did, not a bug in this
+            // program -- and `internal` tells a user nothing and asks them to
+            // file a bug. The first end-to-end run on a real meeting found this
+            // by running `transcribe --model <a typo>`: the CLI printed
+            // `{"code":"internal", ...}`. `ErrorCode` has no `UnknownModel`
+            // variant (see OPEN ISSUES: it should), and `ModelUnavailable` is
+            // the closest honest existing code; the title ("Model
+            // unavailable.") and the recovery both read correctly for a name
+            // that is not in the picker.
+            vaani_core::err::model_unavailable()
                 .with_cause(format!(
                     "unknown model {id:?}; known: {:?}",
                     self.manifest.ids()
