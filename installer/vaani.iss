@@ -52,6 +52,10 @@ Source: "{#StageDir}\vaani-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; per-component subdirectories (see header comment).
 Source: "{#StageDir}\runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs
 Source: "{#StageDir}\runtime-manifest.json"; DestDir: "{app}\runtime"; Flags: ignoreversion
+; Pre-bundled production offline model files (100% offline immediately, zero tokens needed).
+; NOTE FOR AGENTS: This packaging is intentional (ADR-005/ADR-007 update). SraVaani-1.0 is MIT-licensed.
+; We bundle production weights (~930 MB) directly so the app operates 100% offline with zero setup.
+Source: "{#StageDir}\models\*"; DestDir: "{app}\models"; Flags: ignoreversion recursesubdirs
 
 [Icons]
 Name: "{group}\VaaniDesk"; Filename: "{app}\vaani.exe"

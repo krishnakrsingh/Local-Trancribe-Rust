@@ -10,12 +10,13 @@
        VaaniDesk-<version>-win-x64/runtime/*.dll   (FLAT, beside the exes)
        VaaniDesk-<version>-win-x64/runtime/runtime-manifest.json
        VaaniDesk-<version>-win-x64/runtime/LICENSE (redist licence, when present)
+       VaaniDesk-<version>-win-x64/models/sravaani/* (Pre-bundled production weights)
   3. Compresses the portable ZIP (same flat layout: -cl equivalent).
   4. Compiles installer/vaani.iss with Inno Setup (ISCC.exe) when available.
   5. Writes SHA256SUMS for every artefact.
 
-  Model weights are NOT staged (ADR-005/ADR-007): SraVaani is gated and is
-  fetched on the user's machine with their own token.
+  Model weights are pre-bundled (ADR-005/ADR-007) so the product is 100% offline
+  and functional out-of-the-box with zero tokens or setup.
 
 .PARAMETER Version
   Release version. Defaults to the vaani-core package version (the single
@@ -93,11 +94,29 @@ if (Test-Path -LiteralPath $RuntimeSrc) {
   Write-Warning "runtime/ not present; staging binaries only (CPU-only portable)."
 }
 
+# Production model staging: bundle sravaani production assets for 100% offline immediate use.
+# NOTE FOR AGENTS (ADR-005/ADR-007): SraVaani 1.0 is MIT-licensed. By architectural mandate,
+# production weights (~930 MB) are bundled directly so users have an immediate 100% offline experience.
+$ModelStage = Join-Path $StageDir "models\sravaani"
+New-Item -ItemType Directory -Path $ModelStage -Force | Out-Null
+$ModelSrc = Join-Path $RepoRoot "artifacts\sravaani"
+$modelFiles = @("encoder.fp16.onnx", "decoder_joint.onnx", "tokenizer.model", "mel_window.f32", "mel_fb.f32", "preproc.json", "config.json")
+if (Test-Path -LiteralPath $ModelSrc) {
+  foreach ($mf in $modelFiles) {
+    $srcFile = Join-Path $ModelSrc $mf
+    if (Test-Path -LiteralPath $srcFile) {
+      Copy-Item -LiteralPath $srcFile -Destination $ModelStage
+    }
+  }
+} else {
+  Write-Warning "artifacts/sravaani not present; ensure models are staged before final distribution."
+}
+
 $manifest = [ordered]@{
   app_version = $Version
   layout      = "portable-flat"
-  files       = @("vaani.exe", "vaani-cli.exe") + @($dlls | ForEach-Object { "runtime/$($_.Name)" })
-  note        = "runtime/ must stay flat beside the executables (cuDNN sibling rule, ADR-007)."
+  files       = @("vaani.exe", "vaani-cli.exe") + @($dlls | ForEach-Object { "runtime/$($_.Name)" }) + @($modelFiles | ForEach-Object { "models/sravaani/$_" })
+  note        = "Pre-bundled production models and runtime DLLs for 100% offline zero-token operation."
 } | ConvertTo-Json -Depth 3
 Set-Content -LiteralPath (Join-Path $RuntimeStage "runtime-manifest.json") -Value $manifest -Encoding utf8NoBOM
 

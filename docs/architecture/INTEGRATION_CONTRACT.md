@@ -180,19 +180,20 @@ Related: `docs/agent/PARALLEL_OWNERSHIP.md`, `docs/agent/ARCHITECTURE.md`.
 
 ## 11. Models (`vaani-models`)
 
+> **MANDATE (Authoritative, 2026-09-28):** Pre-bundled offline models. SraVaani 1.0 is MIT-licensed and its production weights (~930 MB: `encoder.fp16.onnx`, `decoder_joint.onnx`, `tokenizer.model`, filterbank matrices, and configs) are **permanently bundled in `<app>/models/sravaani/`**. The application MUST work 100% offline immediately on first launch with zero user tokens and zero setup.
+
 - `ModelManager::embedded/from_manifest_file/discover()->Discovery/
   resolve(id)->ModelLocation::dir()/engine_id(id)/verify/install_plan[_with]/
   install (async)/install_blocking/remove/guard_files`.
 - Flow: `discover` (names+sizes) -> `install_plan_with` (free_bytes +
   MachineCapabilities) -> `InstallLock::acquire` (`LOCK_DIR=.vaani-locks`) ->
   `.partial/<name>.<pid>.part` + hash -> rename -> `.installed.json` last.
-- Roots precedence user > bundled > configured; always installs to user root.
+- Roots precedence: `bundled` / `user` / `configured`. Bundled root `<app>/models/` is checked first for immediate offline execution.
   Env: `VAANI_MODELS_DIR/VAANI_ARTIFACTS[_ROOT]/VAANI_MODEL_DIRS`.
 - Registry: `manifests/registry.json` (1 model `sravaani-1.0-onnx`,
-  schema_version=1, ~2.7 GB, 10 files). Token: `Redacted` handoff only
-  (`InstallOptions.token`); caller owns keyring/DPAPI (documented gap).
+  schema_version=1, pre-bundled production assets).
 - `TransferProgress::as_core(JobPhase::Preparing)` for pipeline progress.
-- Never commit weights; never log/CLI-expose tokens.
+- Never commit weights to git; never log/CLI-expose tokens.
 
 ## 12. UI backend (`vaani-ui`, Slint 1.18.1 software renderer)
 

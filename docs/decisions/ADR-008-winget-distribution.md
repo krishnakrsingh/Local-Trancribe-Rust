@@ -76,4 +76,4 @@ all still open.
 | Winget only, no ZIP | `winget` is absent on Windows LTSC and in some managed environments; the ZIP is the floor |
 | An auto-updating installer only (Inno Setup / Squirrel) | reinvents `winget upgrade` and can corrupt a running install |
 | Chocolatey | smaller reach than WinGet on Windows 11, and a second manifest for the same installer |
-| Bundling model weights in the installer | gated artefacts, and 2.7 GB more before the app can do anything (ADR-005) |
+| Excluding models from installer | forces online setup and token entry, breaking 100% offline out-of-the-box guarantee |

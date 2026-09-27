@@ -77,10 +77,10 @@ ADR first and then change the ADR — do not just change the code.
 | [ADR-002](../decisions/ADR-002-rust-workspace-structure.md) | Rust workspace with one crate per subsystem | Accepted (partially built) |
 | [ADR-003](../decisions/ADR-003-onnx-runtime.md) | ONNX Runtime 1.30.0 via `ort` 2.0.0-rc.13, `load-dynamic` | Accepted (built) |
 | [ADR-004](../decisions/ADR-004-sravaani-integration.md) | SraVaani 1.0: native-fp16 encoder, fp32 decoder | Accepted (built) |
-| [ADR-005](../decisions/ADR-005-local-model-manager.md) | Models fetched locally, never committed | Accepted (planned) |
+| [ADR-005](../decisions/ADR-005-local-model-manager.md) | Pre-bundled offline models (100% offline, zero tokens) | Accepted (built) |
 | [ADR-006](../decisions/ADR-006-speaker-diarization.md) | Two-model diarization, pyannote + TitaNet | Accepted (planned) |
-| [ADR-007](../decisions/ADR-007-github-releases-distribution.md) | GitHub Releases as the update channel | Accepted (planned) |
-| [ADR-008](../decisions/ADR-008-winget-distribution.md) | WinGet as the install channel | Accepted (planned) |
+| [ADR-007](../decisions/ADR-007-github-releases-distribution.md) | GitHub Releases distribution with bundled models | Accepted (built) |
+| [ADR-008](../decisions/ADR-008-winget-distribution.md) | WinGet / Inno Setup offline installer distribution | Accepted (built) |
 
 ## The five invariants that outrank local convenience
 

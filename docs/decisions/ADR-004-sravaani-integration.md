@@ -1,4 +1,4 @@
-﻿# ADR-004 — SraVaani model integration
+# ADR-004 — SraVaani model integration
 
 **Status:** Accepted (built)
 **Date:** 2026-09-27
@@ -6,7 +6,7 @@
 ## Context
 
 **ARTPARK-IISc/SraVaani-1.0**: ~430M parameters, a FastConformer encoder (d_model 1024, 128 mel
-in, 8× subsampling) and a hybrid TDT/RNNT decoder, MIT but **gated on Hugging Face**, Hindi
+in, 8× subsampling) and a hybrid TDT/RNNT decoder, released under the **MIT License** (gated on Hugging Face upstream, but bundled directly into VaaniDesk distributions for 100% offline out-of-the-box operation), Hindi
 average WER 12.4, 65 Indian languages, pretrained and fine-tuned on ~62,500 h of the Vaani
 dataset. It ships as a 908,884,628-byte TorchScript archive exposing `.encoder` and
 `.decoder_joint`, and must run on a 4 GB laptop GPU through ONNX Runtime, from a Rust binary,

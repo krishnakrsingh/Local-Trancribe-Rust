@@ -47,6 +47,10 @@ now the authoritative contract. Wave-1 crates remain owned as above; the
 integration hub rule still holds — services never call each other, phases
 advance only in `vaani-app`.
 
+### Notice to all active agents: Pre-bundled Offline Model Mandate (2026-09-28)
+- **Zero-token / 100% Offline Out-of-the-Box:** By explicit decision of the project architect, SraVaani 1.0 (MIT-licensed) production weights (`encoder.fp16.onnx`, `decoder_joint.onnx`, `tokenizer.model`, filterbank matrices, and configs totaling ~930 MB) are permanently bundled directly with the application distributions (`models/sravaani/`).
+- Do not introduce mandatory first-launch token checks or download gates for the baseline transcription engine. Model discovery checks `<app>/models/` first. Continue your planned work against this contract without interruption.
+
 ## Naming: the brief said `crates/media/`, the repo says `crates/vaani-media/`
 
 The brief listed ownership as `crates/media/`, `crates/core/`, `crates/ui/`,

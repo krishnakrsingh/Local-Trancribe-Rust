@@ -40,10 +40,7 @@ runtime, consistent with the rest of the product.
 
 ## Consequences
 
-Both models come from GitHub Releases, so `access` in the model manifest is `open` and no
-token is needed for them. That is a deliberate divergence from ASR, where the gate is
-unavoidable (ADR-005). It also means diarization can be installed by a user who will never
-get SraVaani access, and the app must handle "diarization present, ASR absent".
+Both models come from GitHub Releases or pre-bundled assets, with `access` in the model manifest set to `open` and no token required. Consistent with the core ASR architecture (ADR-005), the product operates 100% offline with zero token gating.
 
 The pipeline is `Vad → Asr → Diarization → Alignment` in `JobPhase` order
 (`crates/vaani-core/src/job.rs:44-50`), and the phases are not independent: diarization must

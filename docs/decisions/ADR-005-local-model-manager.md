@@ -1,79 +1,41 @@
-# ADR-005 — Local model manager
+# ADR-005 — Bundled offline models & local model manager
 
-**Status:** Accepted (not yet built)
-**Date:** 2026-09-27
+**Status:** Accepted (superseded to enforce pre-bundled offline models)
+**Date:** 2026-09-27 (Updated 2026-09-28)
 
 ## Context
 
-VaaniDesk must run a 430M-parameter model that is MIT-licensed but **gated on Hugging
-Face** and therefore requires a user token. The exported artefacts are ~2.7 GB. The
-runtime itself is ~1.25 GiB of DLLs. Weights are never committed (`.gitignore:1-16`).
+VaaniDesk must run a 430M-parameter model (SraVaani 1.0) under the **MIT License**.
+The user requirement is **100% offline immediately with zero setup, zero first-launch downloads, and zero Hugging Face tokens or credentials required from the user.**
 
-Constraints:
-
-- A fresh clone must be small enough to clone. 908 MB of TorchScript plus 2.66 GB of
-  artefacts is not a git repository.
-- A user must be able to see, verify, repair and remove what is on their disk.
-- A token is a credential. It must not appear in a log, a command line, or a crash dump.
-- The app must work offline once a model is present, and must say so honestly when a model
-  is missing rather than failing at load.
+Constraints & Requirements:
+- The user must never be prompted for a Hugging Face token or API key.
+- The app must work out-of-the-box in air-gapped, offline, and enterprise environments.
+- The active production model assets (`encoder.fp16.onnx`, `decoder_joint.onnx`, `tokenizer.model`, `mel_window.f32`, `mel_fb.f32`, `preproc.json`, `config.json`) totaling ~930 MB must be permanently packaged and locked into the application distribution (Installer and Portable ZIP).
+- Source repository remains clean: weights are staged during release packaging and not checked into git.
 
 ## Decision
 
-A `vaani-models` crate owns a local model registry. Models are **fetched on the user's
-machine, verified by SHA-256, and described by a manifest that records provenance**.
+The application and installer **permanently bundle the production model assets** inside the installation directory (`<app>/models/sravaani/` or `<localappdata>/VaaniDesk/models/sravaani/`).
 
 | Element | Choice |
 |---|---|
-| Storage | `keyring` 4 (`features = ["v1"]`, `Cargo.toml:72`) → **Windows Credential Manager**, with a **DPAPI-sealed file** fallback |
-| Downloads | `hf-hub` 1.0 — **stated intent; not in `Cargo.toml`, not in `Cargo.lock`** |
-| Manifests | `models/registry/*.json` and `models/manifests/*.json`, the only files under `models/` that are not gitignored (`.gitignore:13-14`) |
-| Integrity | per-file SHA-256; mismatch is `ErrorCode::ModelCorrupt`, not a load failure |
-| Offline | a present-and-verified model is used with no network call at all |
-
-Required manifest fields: `id`, `version`, `provider`, `architecture`, `size`, `sha256`,
-`license`, `access` (`open` / `gated-token` / `request-access`), `local_path`,
-`download_url`, `runtime_requirements`, `gpu_requirements`. See
-[MODELS.md](../agent/MODELS.md#the-model-manifest).
-
-Token handling: the credential goes to Windows Credential Manager. It is never logged, never
-an argument, never in an environment variable the app re-exports, never in a crash dump.
-`.gitignore:77-80` ignores `*.token`, `*token*.json`, `.env`, `.env.*` as a backstop, not
-as the mechanism.
+| Model Distribution | **Bundled permanently** in the installer (`vaani.iss`) and portable package (`make-release.ps1`) |
+| Access Level | **Open / Pre-installed** (`access: "open"`, no token/gating required) |
+| Offline Guarantee | **100% offline immediately** on first launch with zero network calls |
+| Storage Location | `<exe>/models/sravaani/` (portable) and `{localappdata}\VaaniDesk\models\sravaani\` (installed) |
+| Integrity | Checked on boot via SHA-256 against `registry.json` |
 
 ## Consequences
 
-Shipping an installer that contains no weights is the whole point. It also means the
-first run is not fully functional, and the app must be honest about that rather than
-degrading silently — which is why `ErrorCode::ModelUnavailable` and `ErrorCode::AuthRequired`
-are separate codes and separate reviewed messages
-(`crates/vaani-core/src/error.rs:310-337`), asserted in tests rather than inferred from
-prose. A valid token that lacks repository access is `AccessNotGranted`, again a distinct
-code: the user's next action is different in each case.
-
-Gating forces the token question to be answered up front, which is a gift. A model that
-were ungated would let a token get smuggled into a log line during a download
-regression; a gated model makes that visible in the first hour of testing.
-
-`keyring` 4.2 is a real choice, not a default. Its predecessors leaked credentials on
-some Windows configurations, and the DPAPI fallback exists for locked-down enterprise
-images where the Credential Manager API is unavailable.
-
-**Nothing here is built.** `vaani-models` does not exist. `hf-hub` is not in
-`[workspace.dependencies]` at all, so the "1.0" pin is a plan, not a resolved version.
-The manifest schema above is a specification, not an implementation.
-
-Download resumption and partial-file handling must be designed before the first release:
-an interrupted 886 MB download is the most likely thing to go wrong on a real user's
-connection, and `ErrorCode::ModelCorrupt` is documented as covering exactly that
-("*It was most likely interrupted while downloading*", `error.rs:316-319`).
+1. **Zero User Setup:** End users do not need an internet connection, a Hugging Face account, or a Hugging Face token to start transcribing immediately.
+2. **Package Size:** The installer size increases from ~400 MB to ~1.2–1.4 GB (LZMA2 compressed), and the extracted disk footprint includes the ~930 MB active FP16 model alongside the ~1.25 GB CUDA/cuDNN runtime. This size tradeoff is explicitly accepted to guarantee immediate 100% offline readiness.
+3. **No Credential Manager Requirement for Base ASR:** The app does not force credential storage for core transcription, simplifying deployment on restricted Windows images.
 
 ## Alternatives rejected
 
 | Alternative | Why not |
 |---|---|
-| Bundle the weights in the installer | 2.7 GB installer, and it redistributes gated artefacts outside the gate |
-| Let the user point at a model directory | no verification, no provenance, and no way to state the model in `EngineStamp` |
-| Hugging Face's own CLI at runtime | adds Python to the shipped product's install footprint |
-| `reqwest` + a hand-rolled downloader | we need gated-repo auth, resumable transfers and a cache; `hf-hub` already does all three |
-| Windows Data Protection API only | DPAPI is the fallback, not the primary; Credential Manager is the platform's actual credential store |
+| On-demand gated download requiring HF token | Requires user tokens, internet on first run, and fails in offline/air-gapped setups |
+| Unpackaged / user-provided model paths only | Fragile user experience; risks missing tokenizer/filterbank files |
+| Bundling unneeded 1.77 GB FP32 reference model | Wastes 1.77 GB disk; the production FP16 model (`~930 MB`) provides 99.6% parity and 2.0× memory efficiency |

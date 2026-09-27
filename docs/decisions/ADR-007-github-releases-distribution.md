@@ -1,73 +1,40 @@
 # ADR-007 — GitHub Releases distribution
 
-**Status:** Accepted (not yet built)
-**Date:** 2026-09-27
+**Status:** Accepted (updated to include bundled offline models)
+**Date:** 2026-09-27 (Updated 2026-09-28)
 
 ## Context
 
-VaaniDesk is a ~5 GB product: 1.25 GiB of runtime DLLs, ~2.7 GB of model artefacts that
-are downloaded rather than bundled, and a portable executable. The user base is Windows
-desktop users who will not build from source and who may or may not have a Hugging Face
-token.
+VaaniDesk provides a complete, 100% offline desktop voice transcription tool. The distribution must provide an immediate, zero-token, zero-setup experience.
 
 Requirements:
-
-- An install that does not need a Rust toolchain, Python, or the CUDA Toolkit.
+- An install that does not need a Rust toolchain, Python, the CUDA Toolkit, or a Hugging Face token.
+- Immediate 100% offline functionality upon extraction or installation.
 - A download that is verifiable before it is executed.
-- A channel the existing Windows tooling and the existing user base already trust.
-- An update path that does not require the user to find a download page.
+- A channel the existing Windows tooling and user base already trust.
 
 ## Decision
 
-Publish release artefacts on **GitHub Releases**, and make that URL the single source of
-truth for version discovery. `vaani-updater` checks it and compares against
-`APP_VERSION`.
+Publish release artefacts on **GitHub Releases**, containing pre-bundled runtime DLLs and the active production model weights (`models/sravaani/`).
 
 | Artefact | Contents |
 |---|---|
-| Portable ZIP | `vaani.exe`, `vaani-cli.exe`, `runtime/` (**flat**), licence, a `runtime-manifest.json` |
-| Installer | produced by a separate channel — see ADR-008 |
+| Portable ZIP | `vaani.exe`, `vaani-cli.exe`, `runtime/` (**flat**), `models/sravaani/` (FP16 encoder + joint decoder + tokenizer), licence, `runtime-manifest.json` |
+| Installer | Full offline Inno Setup installer packaging app binaries, `runtime/`, and `models/sravaani/` (see ADR-008) |
 
-The ZIP's `runtime/` must be flat: all DLLs in one directory beside the executable. This is
-not a preference. cuDNN 9's `cudnn64_9.dll` is a dispatcher that `LoadLibrary`s its siblings
-by bare name, and the Windows search order starts at the executable's own directory
-(`fetch_runtime.ps1:110-116`, `runtime.rs:200-219`).
+The ZIP's `runtime/` must be flat: all DLLs in one directory beside the executable (cuDNN 9 sibling loader rule).
 
-Model weights are **not** in the ZIP. SraVaani-1.0 is gated, so the Model Manager fetches
-them on the user's machine with their own token (ADR-005).
+Model weights for active production (`encoder.fp16.onnx`, `decoder_joint.onnx`, `tokenizer.model`, etc. ~930 MB) **are bundled directly** in both the ZIP and Installer so users never need tokens or network access.
 
 ## Consequences
 
-GitHub Releases is the right channel because it already provides assets, per-asset
-SHA-256 in the API `digest` field, immutable tags, and a download counter — and because it
-needs no new account relationship and no distribution contract negotiation. It is also
-where this project's own pinned downloads already come from: the ONNX Runtime asset is
-fetched from `github.com/microsoft/onnxruntime/releases/download/v1.30.0/` and its hash
-`8fa4b08359af682cd605892cb59077049700b640128bb93fd2c7776cf9f55bdc` is a **first-party
-value from the GitHub releases API**, not one we computed from a file we had already
-downloaded (`fetch_runtime.ps1:60-64`). The same discipline must apply to our own
-releases.
-
-The 5 GB download is the real problem this ADR does not solve. Portable ZIP plus separate
-model download is the right shape, but the updater must be resumable and must not restart
-a 1.25 GiB transfer on a flaky connection — the same class of problem as an interrupted
-886 MB model download, and for the same reason.
-
-Publishing to Releases is also the only CI-less path that works today, given there is no
-CI ([RELEASE.md](../agent/RELEASE.md)). It is a release process with no automation, which
-is acceptable at 0.1.0 and will not be at 1.0.0.
-
-Assets must be uploaded with `-cl` (or the equivalent) so `runtime/` is not mangled, and
-the ZIP must be built with the same flat layout the script produces, or the first CUDA
-inference on a user's machine fails with
-`Could not locate cudnn_engines_runtime_compiled64_9.dll`.
+GitHub Releases provides verified release assets with per-asset SHA-256 digests.
+Because the production FP16 model (~930 MB) and runtime (~1.25 GB) are packaged together, the compressed release ZIP / installer is ~1.2–1.4 GB via LZMA2 compression. This enables instant out-of-the-box offline transcription on first launch.
 
 ## Alternatives rejected
 
 | Alternative | Why not |
 |---|---|
-| Microsoft Store / MSIX | sandboxing conflicts with shipping native DLLs and a 1.25 GiB `runtime/` beside the executable; a store review cycle per release |
-| S3 + CloudFront | needs a bucket, a domain, TLS and a CDN configuration, none of which exist |
-| Self-hosted | same operational cost as S3 plus no distribution trust |
-| Bundling the model weights in the ZIP | 2.7 GB more, and it redistributes gated artefacts outside the gate |
-| GitHub Pages | a hosting site, not an artefact store; no content-addressed assets |
+| Microsoft Store / MSIX | sandboxing conflicts with shipping native DLLs and a 1.25 GiB `runtime/` beside the executable |
+| S3 + CloudFront | needs extra bucket/domain operational overhead |
+| Excluding weights and requiring first-run HF login | Breaks 100% offline zero-setup requirement and forces users to create Hugging Face accounts |

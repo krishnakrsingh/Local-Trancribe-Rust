@@ -310,9 +310,14 @@ Ordered by how much it matters to shipping, not by convenience.
    storage error). A third is now visible: there is no `UnknownModel`, so a
    user who mistypes `--model` gets `model_unavailable`, whose title is close
    but not right.
-7. **The model cannot be redistributed casually.** SraVaani is MIT but the
-   repository is `gated-token`, so a first run needs a Hugging Face token and
-   ~887 MiB. There is no bundled-weights path.
+7. **100% offline, pre-bundled models (architect mandate).** SraVaani is
+   MIT-licensed, so the production weights — `encoder.fp16.onnx`,
+   `decoder_joint.onnx`, `tokenizer.model`, the filterbank matrices and the
+   configs, ~930 MB — are bundled permanently under `models/sravaani/`. No
+   first-launch token prompt, no download gate on the baseline engine, and
+   discovery checks `<app>/models/` first. This supersedes the earlier
+   `gated-token` constraint: the Hugging Face gate no longer stands between a
+   user and a working transcript.
 8. **Paint performance is unmeasured.** A5 measured all the state work; nobody
    has measured frame time with a real transcript on screen.
 9. **`push_chunk` has no upper clamp.** A decoded frame can land past the end of

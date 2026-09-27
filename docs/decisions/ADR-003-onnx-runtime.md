@@ -9,10 +9,12 @@ VaaniDesk must run a 430M-parameter FastConformer encoder plus an autoregressive
 decoder on Windows x64, on a 4 GB laptop GPU (3.3 GB of usable DXGI budget), with a CPU
 fallback that produces an identical transcript. The reference machine is a hybrid laptop
 that also reports an 8 GiB shared-memory iGPU, a trap of its own (`capability.rs:153-171`).
-The encoder alone is 887 MB in fp16, so weights, runtime and artefacts total roughly 4 GB,
-which rules out bundling them. Requirements: no build-time network access for anyone who
-clones the repo; no `x86-64-v3` baseline that would refuse to run on older laptops; control
-over which CUDA kernels are present; and a CPU path that always works.
+The encoder alone is 887 MB in fp16, so the active production model assets (~930 MB)
+are pre-bundled alongside the ~1.25 GB runtime in application releases (ADR-005/ADR-007)
+to provide a 100% offline out-of-the-box experience. Requirements: clean git repository
+(weights staged at release time, not checked into source control); no build-time network
+access for anyone who clones the repo; no `x86-64-v3` baseline that would refuse to run on
+older laptops; control over which CUDA kernels are present; and a CPU path that always works.
 
 ## Decision
 
