@@ -284,12 +284,37 @@ impl Pipeline for DirectPipeline {
         }
         engine.unload();
 
+        // The absolute media window, taken from the buffer rather than from
+        // `Transcript::duration`. That field is a *length* while segment times
+        // are *absolute*, and comparing one against the other pins every segment
+        // of a transcript that does not start at zero to the origin. The
+        // conformance harness caught it; see `vaani_segment::MediaBounds`.
+        let bounds = vaani_segment::MediaBounds::of_buffer(&audio);
+        let grouping_policy = vaani_segment::GroupingPolicy::default();
+
         let num_speakers = if req.diarize {
             tracing::info!("separating speakers");
             let diar = vaani_diarization::HeuristicDiarizer::new();
             match diar.diarize_with_timeline(&audio, Some(&timeline), cancel, &|_| {}) {
                 Ok(d) => {
                     let n = d.num_speakers;
+                    // GROUP, THEN ATTRIBUTE — the same two calls, in the same
+                    // order, as `vaani-app`'s `DiarStage`. Both pipelines run
+                    // here, and a policy that existed in only one of them would
+                    // give the two products different transcripts for the same
+                    // recording, which is exactly the trap the 1,913-segment
+                    // transcript was.
+                    //
+                    // Grouping merges the one-word segments into readable ones
+                    // and uses the diarization spans to decide where a turn
+                    // falls; the vote then runs once per segment instead of once
+                    // per word. See `vaani_segment` for why the order matters.
+                    vaani_segment::group_with_diarization_within(
+                        &mut transcript,
+                        &d,
+                        Some(bounds),
+                        &grouping_policy,
+                    )?;
                     vaani_diarization::attribute_speakers(&mut transcript, &d);
                     if transcript.speakers.is_empty() {
                         transcript.speakers = vaani_diarization::speakers_from_diarization(&d);
@@ -302,6 +327,13 @@ impl Pipeline for DirectPipeline {
                     // Diarization is never fatal (contract, ErrorCode docs).
                     warnings.push((e.code().as_str().to_string(), e.user.title.clone()));
                     tracing::warn!("diarization failed; continuing without speakers");
+                    // Group anyway. A transcript of 1,913 one-word segments is
+                    // not a transcript, and the failure is in the *speaker*
+                    // stage, not in the text — so the text still has to be
+                    // readable. Without this, `--no-diarize` and a failed
+                    // diarization would both ship the word-per-line output the
+                    // grouping policy exists to remove.
+                    vaani_segment::group_within(&mut transcript, bounds, &grouping_policy)?;
                     None
                 }
             }
@@ -310,6 +342,9 @@ impl Pipeline for DirectPipeline {
                 ErrorCode::DiarizationFailed.as_str().to_string(),
                 "diarization disabled by --no-diarize".to_string(),
             ));
+            // ASR-only is a complete product mode, not a degraded one, so it
+            // gets a complete transcript: grouped, and with no speakers.
+            vaani_segment::group_within(&mut transcript, bounds, &grouping_policy)?;
             None
         };
 
