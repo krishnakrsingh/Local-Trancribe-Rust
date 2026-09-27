@@ -253,6 +253,34 @@ pub fn meeting_turns(
     out
 }
 
+/// A long, cheap, speech-*free* bed for stages that need wall time rather than
+/// speech: a room floor under a slow tremolo on a two-tone drone.
+///
+/// `voice()` is deliberately expensive — 24 harmonics per sample — so building a
+/// 25-minute buffer from it would cost minutes of test time for no extra
+/// coverage. The media stage does not run a VAD, so it does not need
+/// speech-shaped audio; it needs a file long enough that a cancel can land
+/// inside the decode. This generator is integer-and-`sin`-light and gets there
+/// in about a second.
+pub fn long_bed(seconds: u32, sample_rate: u32, seed: u64) -> Vec<f32> {
+    let frames = seconds as usize * sample_rate as usize;
+    let mut rng = Rng::new(seed);
+    // A per-sample amplitude ramp on a fixed pair of partials, so the decoded
+    // buffer is not trivially compressible and the downmixer has real work.
+    let a = 90.0 + (rng.next_u64() % 40) as f64;
+    let b = 197.0 + (rng.next_u64() % 60) as f64;
+    let tremolo_hz = 3.0 + (rng.next_u64() % 200) as f64 / 100.0;
+    (0..frames)
+        .map(|i| {
+            let t = i as f64 / f64::from(sample_rate);
+            let env = 0.25 + 0.35 * (2.0 * std::f64::consts::PI * tremolo_hz * t).sin();
+            let drone = (2.0 * std::f64::consts::PI * a * t).sin() * 0.6
+                + (2.0 * std::f64::consts::PI * b * t).sin() * 0.3;
+            (drone * env) as f32
+        })
+        .collect()
+}
+
 /// Interleave `channels` copies of mono material into one frame-interleaved
 /// buffer (channel 0 = `left`, channel 1 = `right`, extras cycle).
 pub fn interleave(left: &[f32], right: &[f32], channels: u16) -> Vec<f32> {

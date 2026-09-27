@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 vaani-core = { workspace = true }
+vaani-app = { workspace = true }
 vaani-asr = { workspace = true }
 vaani-inference = { workspace = true }
 vaani-media = { workspace = true }
