@@ -43,7 +43,9 @@ pub mod transcript;
 
 pub use error::{ErrorCode, Result, UserFacingError, VaaniError, err};
 pub use job::{CancelToken, JobPhase, Progress, ProgressKind};
-pub use media::{AudioStreamInfo, DEFAULT_ESTIMATE_RTF, Language, MediaInfo, VideoStreamInfo};
+pub use media::{
+    AudioBuffer, AudioStreamInfo, DEFAULT_ESTIMATE_RTF, Language, MediaInfo, VideoStreamInfo,
+};
 pub use transcript::{EngineStamp, Segment, Speaker, Time, Transcript, TranscriptMode, Word};
 
 /// Product version. Kept in `core` so every crate, the CLI, the database and

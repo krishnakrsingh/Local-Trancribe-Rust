@@ -35,8 +35,15 @@ pub mod config;
 pub mod orchestrator;
 pub mod stages;
 
-#[cfg(test)]
-mod fakes;
+/// Deterministic stand-ins for every external stage.
+///
+/// Not part of the product and hidden from the docs, but **public on purpose**:
+/// the QA crate and the other stage crates' integration tests have to drive the
+/// orchestrator without a model, a GPU or a 14-minute recording. Gating this
+/// behind `#[cfg(test)]` would confine the fakes to this crate's own unit tests
+/// and leave every cross-crate test unable to run the pipeline at all.
+#[doc(hidden)]
+pub mod fakes;
 
 pub use backend::AppBackend;
 pub use config::{AppConfig, DEFAULT_MODEL};

@@ -19,7 +19,7 @@ use parking_lot::Mutex;
 use vaani_asr::engine::AsrEngine;
 use vaani_asr::{artifacts_in, EngineRegistry};
 use vaani_core::pipeline::{PipelineStage, ProgressSink, StageArtifacts, StageContext};
-use vaani_core::{CancelToken, JobPhase, MediaInfo, Progress, Result, VaaniError, err};
+use vaani_core::{err, CancelToken, JobPhase, MediaInfo, Progress, Result, VaaniError};
 use vaani_diarization::HeuristicDiarizer;
 use vaani_export::{ExportFormat, ExportOptions, ExportTarget, ExportedFile};
 use vaani_models::ModelManager;
@@ -649,11 +649,7 @@ impl Orchestrator {
                 .with_cause(format!("job {job_id} has no transcript yet"))
                 .with_recovery("Transcribe the file first.")
         })?;
-        if let Err(error) =
-            std::fs::create_dir_all(work_dir).map_err(|io| err::export_failed().with_cause(io))
-        {
-            return Err(error);
-        }
+        std::fs::create_dir_all(work_dir).map_err(|io| err::export_failed().with_cause(io))?;
         self.store.set_phase(job_id, JobPhase::Exporting, None)?;
         progress(Progress::indeterminate(JobPhase::Exporting));
 

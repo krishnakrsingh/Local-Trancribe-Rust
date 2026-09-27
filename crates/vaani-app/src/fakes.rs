@@ -74,8 +74,7 @@ pub fn write_wav(path: &std::path::Path, seconds: u64, tag: u64) {
     bytes.extend_from_slice(&(data_len as u32).to_le_bytes());
     let frequency = 440.0 + (tag % 8) as f32 * 55.0;
     for i in 0..frames {
-        let sample =
-            (i as f32 / 16_000.0 * frequency * 2.0 * std::f32::consts::PI).sin() * 0.4;
+        let sample = (i as f32 / 16_000.0 * frequency * 2.0 * std::f32::consts::PI).sin() * 0.4;
         let quantized = (sample * i16::MAX as f32) as i16;
         bytes.extend_from_slice(&quantized.to_le_bytes());
     }

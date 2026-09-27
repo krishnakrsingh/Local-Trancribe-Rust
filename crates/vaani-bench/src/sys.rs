@@ -52,7 +52,9 @@ pub fn peak_rss_bytes() -> Option<u64> {
 
 /// Peak process working set in MiB, or `0.0` when unmeasured.
 pub fn peak_rss_mb() -> f64 {
-    peak_rss_bytes().map(|b| b as f64 / 1_048_576.0).unwrap_or(0.0)
+    peak_rss_bytes()
+        .map(|b| b as f64 / 1_048_576.0)
+        .unwrap_or(0.0)
 }
 
 /// Display adapters visible to this process (empty when unmeasurable).
@@ -116,13 +118,12 @@ pub fn cudart_present() -> bool {
 pub fn device_label() -> String {
     #[cfg(windows)]
     {
-        if cudart_present() {
-            if let Some(a) = windows_adapters()
+        if cudart_present()
+            && let Some(a) = windows_adapters()
                 .into_iter()
                 .find(|a| a.is_nvidia() && !a.is_software && a.budget_bytes > 0)
-            {
-                return format!("cuda ({})", a.name);
-            }
+        {
+            return format!("cuda ({})", a.name);
         }
         "cpu".to_string()
     }
@@ -138,10 +139,20 @@ pub fn device_label() -> String {
 /// script) so the number is reproducible without shelling out; otherwise
 /// `"unknown"`. Never guessed.
 pub fn git_sha() -> String {
-    std::env::var("VAANI_GIT_SHA")
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|_| "unknown".to_string())
+    // `std::env::var` yields a `Result`, not an `Iterator`, so this cannot be a
+    // `filter` on a mapped value: an empty variable is as uninformative as an
+    // absent one, and both mean "unknown".
+    match std::env::var("VAANI_GIT_SHA") {
+        Ok(sha) => {
+            let sha = sha.trim();
+            if sha.is_empty() {
+                "unknown".to_string()
+            } else {
+                sha.to_string()
+            }
+        }
+        Err(_) => "unknown".to_string(),
+    }
 }
 
 #[cfg(windows)]
@@ -161,8 +172,10 @@ fn windows_peak_rss_bytes() -> Option<u64> {
         )
     };
     if ok.is_ok() {
-        // PeakWorkingSetSize is a SIZE_T count of bytes.
-        Some(counters.PeakWorkingSetSize)
+        // PeakWorkingSetSize is a SIZE_T (usize) count of bytes. The target is
+        // x86_64, so the widening is exact; the cast is here so a 32-bit build
+        // would truncate rather than silently wrap.
+        Some(counters.PeakWorkingSetSize as u64)
     } else {
         None
     }
@@ -183,10 +196,8 @@ fn windows_adapters() -> Vec<AdapterInfo> {
         let mut info = windows::Win32::Graphics::Dxgi::DXGI_QUERY_VIDEO_MEMORY_INFO::default();
         // SAFETY: `info` is a correctly sized zeroed out-param struct; node 0
         // is valid on every adapter implementing IDXGIAdapter3.
-        if unsafe {
-            a3.QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info)
-        }
-        .is_err()
+        if unsafe { a3.QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info) }
+            .is_err()
         {
             return (0, 0);
         }
@@ -277,7 +288,10 @@ mod tests {
         // nonzero budget must actually exist: guards against regressing to
         // largest-adapter (preferred_adapter) selection.
         if let Some(budget) = inference_vram_budget_bytes() {
-            assert!(cudart_present(), "a budget requires a loadable CUDA runtime");
+            assert!(
+                cudart_present(),
+                "a budget requires a loadable CUDA runtime"
+            );
             let found = adapters()
                 .into_iter()
                 .any(|a| a.is_nvidia() && !a.is_software && a.budget_bytes == budget);

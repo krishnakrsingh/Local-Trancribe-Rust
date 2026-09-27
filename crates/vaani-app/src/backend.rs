@@ -215,6 +215,22 @@ impl AppBackend {
 
     /// Fold one [`Progress`] into the job summary and publish it.
     fn on_progress(&self, id: &JobId, progress: Progress) {
+        // The store stage reports `Complete` through the progress channel, so a
+        // terminal progress event arrives *before* the worker's own terminal
+        // event. If this path published the summary as it stands, the UI would
+        // briefly show a finished job whose transcript pane is empty — and any
+        // consumer that acts on the first terminal event it sees (which is the
+        // correct thing for a consumer to do) would read the job as having no
+        // result at all. So a terminal progress event carries the derived
+        // transcript facts, read from the store that was just written.
+        let transcript = if progress.phase.is_terminal() {
+            self.orchestrator
+                .store()
+                .try_load_transcript(id.as_str())
+                .unwrap_or(None)
+        } else {
+            None
+        };
         let event = {
             let mut state = self.state.lock();
             let Some(entry) = state.jobs.get_mut(id.as_str()) else {
@@ -226,6 +242,20 @@ impl AppBackend {
             entry.summary.eta = progress.estimated_remaining();
             if progress.phase.is_terminal() {
                 entry.summary.cancel_requested = false;
+                if transcript.is_some() {
+                    entry.summary.has_transcript = true;
+                    entry.summary.word_count = Some(
+                        transcript
+                            .as_ref()
+                            .map(|t| {
+                                t.segments
+                                    .iter()
+                                    .map(|segment| segment.words.len())
+                                    .sum::<usize>()
+                            })
+                            .unwrap_or_default(),
+                    );
+                }
             }
             ControllerEvent::JobChanged(entry.summary.clone())
         };
@@ -320,9 +350,9 @@ impl AppBackend {
         let worker = Arc::clone(self);
         let worker_id = id.clone();
         let progress = move |p: Progress| worker.on_progress(&worker_id, p);
-        let outcome =
-            self.orchestrator
-                .run_job(id.as_str(), &input, &config, &token, &progress);
+        let outcome = self
+            .orchestrator
+            .run_job(id.as_str(), &input, &config, &token, &progress);
         self.on_job_finished(&id, &outcome);
     }
 

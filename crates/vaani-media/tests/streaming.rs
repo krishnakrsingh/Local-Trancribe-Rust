@@ -299,7 +299,6 @@ fn cancellation_latency_does_not_grow_with_the_length_of_the_recording() {
         };
         let mut stream = AudioStream::open(f.path(), &options).expect("open");
         let cancel = CancelToken::new();
-        let token = cancel.clone();
 
         let total = stream.media_info().declared_duration_ms.unwrap_or(0) as f64 / 1000.0;
         assert!(
@@ -307,32 +306,26 @@ fn cancellation_latency_does_not_grow_with_the_length_of_the_recording() {
             "the fixture is too short to cancel meaningfully"
         );
         let started = Instant::now();
-        let worker = std::thread::spawn(move || {
-            // Let a little audio through first, so the cancel lands mid-stream
-            // rather than at the first poll.
-            std::thread::sleep(Duration::from_millis(30));
-            token.cancel();
-        });
 
-        // A loop, not a single read: the first chunk is produced in a
-        // millisecond or two, long before the cancel lands, and returning `Ok`
-        // from the first chunk is not a failure of the contract.
+        // One chunk first, then cancel, on this thread. A background
+        // `sleep(30ms)` races a release decoder that finishes a 5 s file in
+        // about a millisecond, so the cancel would usually land after the
+        // stream was already done and there would be no latency to measure.
+        // Cancelling synchronously after the first chunk makes "how much audio
+        // gets decoded after Cancel" a deterministic quantity at any decode
+        // speed, which is exactly the property being asserted.
         let mut chunk = Vec::new();
-        let mut err = None;
-        while stream.next_chunk_into(&mut chunk, &cancel).is_ok() {
-            let elapsed = started.elapsed();
-            if elapsed > Duration::from_secs(10) {
-                break;
-            }
-        }
-        if let Err(e) = stream.next_chunk_into(&mut chunk, &cancel) {
-            err = Some(e);
-        }
+        stream
+            .next_chunk_into(&mut chunk, &cancel)
+            .expect("the first chunk must be produced");
+        cancel.cancel();
+
+        let err = stream
+            .next_chunk_into(&mut chunk, &cancel)
+            .expect_err("the decode must end in a cancellation");
         let after = stream.report().source_seconds();
         let wall = started.elapsed();
-        let _ = worker.join();
 
-        let err = err.expect("the decode must end in a cancellation");
         assert_eq!(
             err.code(),
             vaani_core::ErrorCode::Cancelled,
@@ -400,30 +393,35 @@ fn a_stream_that_is_cancelled_reports_how_far_it_got() {
     );
 
     let cancel = CancelToken::new();
-    let token = cancel.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(20));
-        token.cancel();
-    });
+
+    // Cancel from *this* thread, after exactly one chunk, rather than from a
+    // sleeping helper thread. A release build decodes a 10 s file in about two
+    // milliseconds, so a `sleep(20ms)`-then-cancel races the decoder and
+    // usually loses: the decode finishes first and there is no cancellation to
+    // observe. Pulling one chunk and then cancelling makes the test mean the
+    // same thing in debug and in release, which is the only way a timing
+    // assertion can be trusted.
     let mut chunk = Vec::new();
-    let mut chunks = 0usize;
-    while stream.next_chunk_into(&mut chunk, &cancel).is_ok() {
-        chunks += 1;
-        if chunks > 10_000 {
-            break;
-        }
-    }
-    let _ = stream.next_chunk_into(&mut chunk, &cancel);
+    stream
+        .next_chunk_into(&mut chunk, &cancel)
+        .expect("the first chunk must be produced before any cancellation");
+    assert!(!chunk.is_empty(), "a successful chunk must contain samples");
+    cancel.cancel();
+
+    let err = stream
+        .next_chunk_into(&mut chunk, &cancel)
+        .expect_err("a cancelled stream must report the cancellation");
 
     let report = stream.report();
-    assert!(
-        chunks > 0,
-        "the cancel landed before any audio was produced"
+    assert_eq!(
+        err.code(),
+        vaani_core::ErrorCode::Cancelled,
+        "{}",
+        err.debug_chain()
     );
     assert!(
         report.source_frames > 0,
-        "a decode that produced {} chunks reported no source frames",
-        chunks
+        "a decode that produced a chunk reported no source frames"
     );
     assert!(
         report.source_seconds() < 10.0,

@@ -14,9 +14,7 @@
 use std::sync::Arc;
 
 use vaani_core::media::AudioBuffer;
-use vaani_core::pipeline::{
-    DiarizationResult, PipelineStage, SpeechTimeline, StageContext,
-};
+use vaani_core::pipeline::{DiarizationResult, PipelineStage, SpeechTimeline, StageContext};
 use vaani_core::{err, CancelToken, JobPhase, Result};
 use vaani_diarization::HeuristicDiarizer;
 
