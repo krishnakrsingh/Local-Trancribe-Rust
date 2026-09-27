@@ -5773,6 +5773,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "vaani-qa"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "vaani-asr",
+ "vaani-core",
+ "vaani-inference",
+]
+
+[[package]]
 name = "vaani-storage"
 version = "0.1.0"
 dependencies = [

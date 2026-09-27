@@ -12,6 +12,7 @@ members = [
     "crates/vaani-models",
     "crates/vaani-cli",
     "crates/vaani-ui",
+    "crates/vaani-qa",
 ]
 # Every crate exists as a manifest-only skeleton so that eight agents can work
 # in parallel against real dependency graphs instead of guessing. `scripts/
@@ -35,6 +36,7 @@ vaani-models = { path = "crates/vaani-models" }
 vaani-updater = { path = "crates/vaani-updater" }
 vaani-app = { path = "crates/vaani-app" }
 vaani-ui = { path = "crates/vaani-ui" }
+vaani-qa = { path = "crates/vaani-qa" }
 
 anyhow = "1"
 thiserror = "2"
