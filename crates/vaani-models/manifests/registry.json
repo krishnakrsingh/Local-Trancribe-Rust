@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "updated": "2026-09-27",
+  "description": "Every model VaaniDesk knows how to find, verify and install. A human can add a model here without touching Rust: add a models[] entry, give it an id, a licence, an access level, a source, and one entry per file with its byte count and SHA-256. Unknown keys are rejected on load, so a misspelled field is an error rather than a silent default. See manifests/README.md.",
+  "models": [
+    {
+      "id": "sravaani-1.0-onnx",
+      "engine_id": "sravaani",
+      "dir": "sravaani",
+      "version": "1.0",
+      "display_name": "SraVaani 1.0",
+      "description": "The speech recognition model VaaniDesk runs. 65 Indian languages, a FastConformer encoder and a hybrid TDT/RNNT decoder, exported to ONNX by scripts/export_sravaani_onnx.py. The whole install is 2.5 GiB on disk, of which 887 MB is the encoder the app actually loads.",
+      "task": "asr",
+      "architecture": "fastconformer-tdt-rnnt",
+      "architecture_params": {
+        "enc_d_model": "1024",
+        "feat_in": "128",
+        "subsampling_factor": "8",
+        "pred_hidden": "640",
+        "pred_rnn_layers": "1",
+        "vocab_size": "5000",
+        "blank_id": "5000",
+        "max_symbols": "10",
+        "tokenizer": "sentencepiece-unigram-5000"
+      },
+      "access": "gated-token",
+      "license": {
+        "spdx": "MIT",
+        "name": "MIT License",
+        "url": "https://huggingface.co/ARTPARK-IISc/SraVaani-1.0"
+      },
+      "source": {
+        "kind": "huggingface",
+        "repo": "ARTPARK-IISc/SraVaani-1.0",
+        "revision": "main",
+        "homepage": "https://huggingface.co/ARTPARK-IISc/SraVaani-1.0"
+      },
+      "languages": [
+        "hi",
+        "en"
+      ],
+      "sample_rates": [
+        16000
+      ],
+      "size_bytes": 2702792388,
+      "resources": {
+        "min_vram_bytes": 1610612736,
+        "rec_vram_bytes": 2147483648,
+        "min_ram_bytes": 2147483648,
+        "rec_ram_bytes": 4294967296
+      },
+      "gpu": {
+        "compute_capability_min": "8.6",
+        "vram_headroom_bytes": 1073741824
+      },
+      "runtime": {
+        "opset": 17,
+        "onnxruntime": ">=1.30.0",
+        "cudnn": "9.14.0.64",
+        "cuda_redist": "13.0.2"
+      },
+      "files": [
+        {
+          "path": "encoder.fp16.onnx",
+          "role": "weights",
+          "bytes": 886484931,
+          "sha256": "d3fc90fd03fd8c26aa209d3c0209e42024813f74f357f919fa33603496ab553d",
+          "required": true,
+          "note": "Production encoder. Native fp16 graph I/O, so the features must be converted with F16Tensor::from_f32. This is the file that has to be streamed, not read: 845 MiB."
+        },
+        {
+          "path": "decoder_joint.onnx",
+          "role": "weights",
+          "bytes": 43033439,
+          "sha256": "3f7f6a87d1523205760989ab66ebea16041911af00caea4118f9c4e982b87a9e",
+          "required": true,
+          "note": "TDT emission step, fp32. Must stay fp32: its LSTM state is threaded through every step of a whole utterance. Request logits/h_out/c_out by name; target_length is dead but cannot be removed from the graph."
+        },
+        {
+          "path": "tokenizer.model",
+          "role": "tokenizer",
+          "bytes": 325287,
+          "sha256": "0af4086ec53482ac0cef0375369cf4ce7bafaf8b0a7203e97d126d0599ab90a6",
+          "required": true,
+          "note": "SentencePiece unigram, 5000 pieces, copied out of the Hugging Face snapshot by the exporter. Without it the engine cannot open at all."
+        },
+        {
+          "path": "mel_window.f32",
+          "role": "frontend",
+          "bytes": 1600,
+          "sha256": "744788a137aa808ccc97d9d3c185c649b2e9c2b99c3262887c3ac9bb3b7e1c4c",
+          "required": true,
+          "note": "400 x f32, torch.hann_window(400, periodic=False). Symmetric, not periodic. Never pad or shorten it; the zero-padding to n_fft=512 happens in the front end at load time."
+        },
+        {
+          "path": "mel_fb.f32",
+          "role": "frontend",
+          "bytes": 131584,
+          "sha256": "f5608e00763a20a191022fbb00a43346db5f1ec06828a97a6f4157f7d02b76c8",
+          "required": true,
+          "note": "Mel filterbank, 32896 x f32 = 128 x 257, row-major."
+        },
+        {
+          "path": "preproc.json",
+          "role": "frontend",
+          "bytes": 426,
+          "sha256": "d418bc9261f10c44931ddafa5a0860cfcb0ea9767581e0a9cf22a1b5327f15ab",
+          "required": true,
+          "note": "Front-end parameters. log_zero_guard_value is exactly 2^-24, not NeMo's 1e-5; changing it changes the normalisation of the low-energy bins."
+        },
+        {
+          "path": "config.json",
+          "role": "config",
+          "bytes": 590,
+          "sha256": "c8728b677886f41d09524ef533e15473943dcec0f2af5564920d735d04c16fd3",
+          "required": true,
+          "note": "Hyper-parameters, mirrored from the Hugging Face config. SraVaaniConfig::load reads it and validates the invariants the decode loop relies on."
+        },
+        {
+          "path": "encoder.onnx",
+          "role": "reference",
+          "bytes": 1772812911,
+          "sha256": "25334b93b915bf8dac1d35c08b715a07b8e84c03240ff98a87ca927dfe0ca0f6",
+          "required": false,
+          "note": "fp32 reference encoder, 1.65 GiB. The app never opens it; it exists so the fp16 graph can be compared against its own reference (99.609% argmax agreement, measured). Optional because its absence costs nothing at runtime, and deliberately not deleted: removing it would remove the only way to re-run that parity check."
+        },
+        {
+          "path": "model_meta.json",
+          "role": "provenance",
+          "bytes": 257,
+          "sha256": "b3e7134ae4cb324f555f3a97d171fc0c0b25a7e102f8757a599f6025a3e94105",
+          "required": false,
+          "note": "Copied from the Hugging Face snapshot by the exporter. Records which snapshot the weights came from."
+        },
+        {
+          "path": "artefacts.json",
+          "role": "provenance",
+          "bytes": 1363,
+          "sha256": "88cda943120c20d8edc4cfbe4f2ccdbdc8f89d990d79b50fc2c2c0f4deb05111",
+          "required": false,
+          "note": "The exporter's own sha256 log. Known stale for encoder.fp16.onnx (it still records the pre-inline split into .onnx plus .onnx_data), which is exactly why this manifest carries hashes measured from the files that are actually on disk instead of trusting artefacts.json."
+        }
+      ]
+    }
+  ]
+}
