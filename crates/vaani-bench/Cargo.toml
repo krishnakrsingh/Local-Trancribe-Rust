@@ -1,0 +1,31 @@
+[package]
+name = "vaani-bench"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "A9 performance lab for VaaniDesk: staged benchmark harness, machine-readable report, and OS resource probes. Measures; never rewrites product code."
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Workspace member since 2026-09-27 (architect adoption). Dependencies are
+# inherited from `[workspace.dependencies]` so the pinned versions stay single-sourced.
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# Pinned by the workspace (0.62, the same major `vaani-inference` uses). Features
+# are the minimal set for the sys probes: DXGI enumeration, peak-RSS via psapi,
+# and a dynamic cudart presence check (no link-time CUDA dependency).
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dxgi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
+
+[[bin]]
+name = "vaani-bench"
+path = "src/bin/vaani-bench.rs"

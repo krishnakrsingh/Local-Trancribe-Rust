@@ -11,9 +11,16 @@ publish = false
 vaani-core = { workspace = true }
 vaani-asr = { workspace = true }
 vaani-inference = { workspace = true }
+vaani-media = { workspace = true }
+vaani-vad = { workspace = true }
+vaani-diarization = { workspace = true }
+vaani-storage = { workspace = true }
+vaani-export = { workspace = true }
+vaani-models = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

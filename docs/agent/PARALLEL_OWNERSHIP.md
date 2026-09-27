@@ -36,13 +36,16 @@ private definition of "a buffer of audio".
 | **A7 model manager** | `crates/vaani-models/**`, `models/**` | `crates/vaani-inference/**`, `crates/vaani-asr/**` |
 | **A8 cli+dist** | `crates/vaani-cli/**`, `.github/**`, `installer/**`, `scripts/release/**` | the five existing files in `scripts/` (frozen, below) |
 | **A10 qa** | `tests/**` | anything under `crates/` |
+| **A2 app** | `crates/vaani-app/**` | anything else — especially frozen `vaani-asr` math |
+| **A9 bench** | `crates/vaani-bench/**`, `scripts/bench/**` | product code (measure, don't rewrite) |
 | **Architect** | `crates/vaani-core/**`, `Cargo.toml`, `Cargo.lock`, `docs/**`, `scripts/{build_doctor,fetch_runtime,export_sravaani_onnx,make_golden}.*`, `scripts/cudnn.sha256`, `.gitignore`, `rust-toolchain.toml` | — |
 
-Wave 2, not yet spawned: **A2 job pipeline** (`crates/vaani-app/**`) and
-**A9 performance lab** (`crates/vaani-bench/**`). Both are held back
-deliberately — A2 is the integration hub and should be written against real
-module interfaces, not stubs; A9 must measure the real pipeline, not a
-reconstruction of it.
+Wave 2 is now active (2026-09-27): **A2 job pipeline** (`crates/vaani-app/**`)
+and **A9 performance lab** (`crates/vaani-bench/**`) are spawned against the
+real module interfaces in `docs/architecture/INTEGRATION_CONTRACT.md`, which is
+now the authoritative contract. Wave-1 crates remain owned as above; the
+integration hub rule still holds — services never call each other, phases
+advance only in `vaani-app`.
 
 ## Naming: the brief said `crates/media/`, the repo says `crates/vaani-media/`
 

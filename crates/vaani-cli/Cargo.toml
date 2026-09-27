@@ -7,8 +7,30 @@ description = "vaani-cli for VaaniDesk."
 license = "MIT OR Apache-2.0"
 publish = false
 
+[[bin]]
+name = "vaani"
+path = "src/bin/vaani.rs"
+
+[[bin]]
+name = "vaani-cli"
+path = "src/bin/vaani-cli.rs"
+
 [dependencies]
 vaani-core = { workspace = true }
+vaani-media = { workspace = true }
+vaani-vad = { workspace = true }
+vaani-asr = { workspace = true }
+vaani-diarization = { workspace = true }
+vaani-storage = { workspace = true }
+vaani-export = { workspace = true }
+vaani-models = { workspace = true }
+vaani-inference = { workspace = true }
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
 clap = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
