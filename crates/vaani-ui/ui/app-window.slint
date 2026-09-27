@@ -1,96 +1,1568 @@
-// The root window. Structure and state names are the integration surface with
-// the application layer, so they are spelled out here rather than improvised
-// later.
-import { Button, VerticalBox, HorizontalBox, ListView, ScrollView } from "std-widgets.slint";
+// The VaaniDesk window.
+//
+// # This file is the integration surface
+//
+// Every property and callback declared on `AppWindow` is named in the A5 report
+// under API CONTRACT. Renaming one is a breaking change for whoever wires the
+// production backend, so the names are spelled out here rather than improvised
+// later, and the Rust side refers to them through the generated accessors only.
+//
+// # Conventions in this file
+//
+// * **Logical units only.** Every length is in `px`, which Slint scales by the
+//   display's scale factor. There is no physical-pixel constant anywhere, which
+//   is what makes the window legible at 100% and 150% without a second layout.
+// * **Status is never colour alone.** Every state that has a colour also has a
+//   glyph or a word, so the state survives a monochrome display, a colour
+//   vision deficiency and a screen reader.
+// * **Text reflows, it does not clip.** Anything that can be long sets
+//   `wrap: word-wrap`. The one place a list row is deliberately bounded, the
+//   transcript, elides with an ellipsis and the full text is one keystroke
+//   away in the detail pane, so nothing is ever silently lost.
+// * **ASCII only**, deliberately: the markup is read by people and by tools
+//   whose encodings are not guaranteed, and a middle dot in a status line is
+//   not worth a mojibake bug.
+
+import { CheckBox, ComboBox, LineEdit, ListView, ScrollView, Palette } from "std-widgets.slint";
+
+// ---------------------------------------------------------------------------
+// Data types crossing the boundary
+// ---------------------------------------------------------------------------
+
+// Mirrors vaani_core::JobPhase one-for-one, including Cancelled, which
+// vaani_core::JobPhase::ALL omits because that list is the forward path. A Rust
+// test asserts the two stay in step; adding a phase to the domain without
+// adding it here fails that test rather than rendering a blank row.
+export enum Phase {
+    Queued,
+    Preparing,
+    ExtractingAudio,
+    NormalizingAudio,
+    Vad,
+    Asr,
+    Diarization,
+    Alignment,
+    PostProcessing,
+    Structuring,
+    Exporting,
+    Complete,
+    Failed,
+    Cancelled,
+}
+
+export struct JobRow {
+    id: string,
+    name: string,
+    input-path: string,
+    phase-label: string,
+    phase-code: string,
+    // Clamped to [0, 1]. Negative means genuinely indeterminate, which renders
+    // as a sweeping bar and the phase name, never as a fabricated percentage.
+    progress: float,
+    // Whether the bar sweeps. Only a running phase sweeps: a sweep is an
+    // animation, an animation costs a frame of CPU every tick, and a window
+    // full of finished jobs must be idle.
+    progress-indeterminate: bool,
+    progress-text: string,
+    eta-text: string,
+    status-text: string,
+    status-glyph: string,
+    is-running: bool,
+    is-queued: bool,
+    is-terminal: bool,
+    is-complete: bool,
+    is-failed: bool,
+    is-cancelled: bool,
+    is-cancelling: bool,
+    is-selected: bool,
+    has-transcript: bool,
+    error-title: string,
+    error-recovery: string,
+    error-code: string,
+}
+
+export struct TranscriptRow {
+    index: int,
+    // Lines of text before this row. The windowing arithmetic is done in whole
+    // lines so the Rust side never has to know the pixel height of a line,
+    // which is the one number that changes with font and scale factor.
+    lines-before: int,
+    line-count: int,
+    timestamp: string,
+    speaker: string,
+    text: string,
+    is-selected: bool,
+    is-turn-start: bool,
+    is-match: bool,
+    is-unattributed: bool,
+}
 
 export struct SpeakerRow {
     index: int,
+    display-index: int,
     name: string,
+    generated-name: string,
     talk-time: string,
+    share-text: string,
+    share: float,
+    is-selected: bool,
+    is-editing: bool,
+    is-named: bool,
 }
 
-// Job lifecycle, mirroring vaani_core::JobPhase. Keeping the two in step is a
-// deliberate duplication: the UI must not depend on the domain crate's
-// enums being serde-serialisable across a Slint boundary.
-export enum Phase {
-    Queued,
-    Probing,
-    ExtractingAudio,
-    DetectingSpeech,
-    Transcribing,
-    Diarizing,
-    Postprocessing,
-    Structuring,
-    Saving,
-    Exporting,
-    Done,
-    Cancelled,
-    Failed,
+// ---------------------------------------------------------------------------
+// Colours
+// ---------------------------------------------------------------------------
+
+// Every colour the window uses, derived from the fluent palette so light and
+// dark come from one place and the window cannot end up half-themed.
+//
+// `color-scheme` is two-way bound to `Palette.color-scheme`, so setting it to
+// `ColorScheme.unknown` from Rust hands control back to the operating system.
+export global VaaniColors {
+    in-out property <ColorScheme> color-scheme <=> Palette.color-scheme;
+    out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
+
+    out property <brush> surface: Palette.background;
+    out property <brush> raised: Palette.alternate-background;
+    out property <brush> ink: Palette.foreground;
+    out property <brush> ink-dim: Palette.foreground.with-alpha(0.66);
+    out property <brush> accent: Palette.accent-background;
+    out property <brush> accent-ink: Palette.accent-foreground;
+    out property <brush> line: Palette.border;
+    out property <brush> selected: Palette.selection-background;
+    out property <brush> selected-ink: Palette.selection-foreground;
+
+    // Status colours. Always paired with a glyph or a word at the call site.
+    out property <brush> ok: self.dark ? #6CCB5F : #107C10;
+    out property <brush> warn: self.dark ? #FCE100 : #9D5D00;
+    out property <brush> bad: self.dark ? #FF99A4 : #B10E1C;
+    out property <brush> idle: self.dark ? #9A9A9A : #5E5E5E;
+
+    out property <brush> focus-ring: self.dark ? #60CDFF : #005FB8;
+    out property <brush> focus-contrast: self.dark ? #101010 : #FFFFFF;
 }
 
-export component AppWindow inherits Window {
-    in-out property <[SpeakerRow]> speakers;
-    in-out property <Phase> phase;
-    in-out property <float> progress;
-    in-out property <string> status;
-    in-out property <string> transcript;
-    in property <bool> busy;
+// ---------------------------------------------------------------------------
+// Shared pieces
+// ---------------------------------------------------------------------------
 
-    title: "VaaniDesk";
-    preferred-width: 1100px;
-    preferred-height: 720px;
+// A focus indicator that is visible on any background.
+//
+// Two rings, not one: an inner accent ring and an outer contrast ring. A
+// single-colour focus ring is invisible when it lands on a similarly-coloured
+// surface, which is a real accessibility failure and not a theoretical one, as
+// the accent colour and the panel colour are both blue in the light scheme.
+component FocusRing inherits Rectangle {
+    in property <bool> show: false;
+    in property <length> radius: 4px;
 
-    VerticalBox {
-        padding: 12px;
-        spacing: 10px;
+    background: transparent;
+    border-radius: self.radius;
+    border-width: self.show ? 2px : 0px;
+    border-color: VaaniColors.focus-ring;
 
-        HorizontalBox {
-            alignment: start;
-            Button { text: "Add file"; enabled: !root.busy; }
-            Button { text: "Transcribe"; enabled: !root.busy; }
-            Button { text: "Cancel"; enabled: root.busy; }
-            Button { text: "Export"; enabled: !root.busy; }
+    Rectangle {
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        background: transparent;
+        border-radius: parent.radius + 2px;
+        border-width: parent.show ? 1px : 0px;
+        border-color: VaaniColors.focus-contrast;
+    }
+}
+
+// A horizontal bar. `value` in [0, 1], or negative for indeterminate.
+component Meter inherits Rectangle {
+    in property <float> value: 0;
+    in property <length> bar-height: 8px;
+    in property <brush> fill: VaaniColors.accent;
+
+    height: self.bar-height;
+    border-radius: self.bar-height / 2;
+    background: VaaniColors.line;
+
+    Rectangle {
+        width: parent.width * (root.value < 0 ? 0 : min(root.value, 1));
+        height: parent.height;
+        border-radius: parent.border-radius;
+        background: root.fill;
+    }
+
+    // An indeterminate bar sweeps a short segment. It is animated, not a
+    // percentage, precisely because the amount of work is not knowable.
+    if root.value < 0: Rectangle {
+        width: parent.width * 0.28;
+        height: parent.height;
+        border-radius: parent.border-radius;
+        background: root.fill;
+        // Driven from the global animation tick rather than a state machine, so
+        // it costs nothing when the window is not being redrawn.
+        x: Math.mod(animation-tick() / 1100ms, 1) * parent.width * 0.72;
+    }
+
+    accessible-role: progress-indicator;
+    accessible-value: root.value < 0 ? "working, progress unknown" : round(root.value * 100) + "%";
+}
+
+// A labelled button with a visible focus ring.
+//
+// `Button` from std-widgets has its own focus handling, but it cannot carry a
+// per-instance accessible description, and the descriptions here are the point:
+// "Cancel" on its own does not tell a screen reader user that it stops the
+// running job.
+component ActionButton inherits Rectangle {
+    in property <string> label: "";
+    in property <bool> primary: false;
+    in property <bool> enabled: true;
+    in property <bool> destructive: false;
+    in property <string> description: "";
+
+    callback clicked();
+
+    min-width: 72px;
+    height: 32px;
+    border-radius: 4px;
+    background: !root.enabled ? VaaniColors.line.with-alpha(0.4)
+        : root.primary ? VaaniColors.accent
+        : touch.has-hover ? VaaniColors.raised
+        : VaaniColors.surface;
+    border-width: root.primary ? 0px : 1px;
+    border-color: root.destructive ? VaaniColors.bad : VaaniColors.line;
+    opacity: root.enabled ? 1.0 : 0.55;
+    forward-focus: i-focus;
+
+    Text {
+        x: 6px;
+        width: parent.width - 12px;
+        text: root.label;
+        color: !root.enabled ? VaaniColors.idle
+            : root.primary ? VaaniColors.accent-ink
+            : root.destructive ? VaaniColors.bad
+            : VaaniColors.ink;
+        font-weight: root.primary ? 600 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        wrap: word-wrap;
+        max-lines: 2;
+        overflow: elide;
+    }
+
+    FocusRing {
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        show: i-focus.has-focus;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        accessible-role: button;
+        accessible-enabled: root.enabled;
+        accessible-label: root.label;
+        accessible-description: root.description;
+        accessible-action-default => { if (root.enabled) { root.clicked(); } }
+        clicked => { if (root.enabled) { root.clicked(); } }
+    }
+
+    // A zero-width focus scope is the standard Slint idiom for making a custom
+    // control keyboard-operable without giving it a focus rectangle of its own.
+    i-focus := FocusScope {
+        x: 0;
+        width: 0;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == Key.Space) {
+                if (root.enabled) { root.clicked(); }
+                return EventResult.accept;
+            }
+            return EventResult.reject;
         }
+    }
+}
 
-        HorizontalBox {
+// A section heading.
+component SectionTitle inherits Text {
+    in property <string> label: "";
+    text: self.label;
+    color: VaaniColors.ink;
+    font-weight: 600;
+    font-size: 13px;
+    wrap: word-wrap;
+}
+
+// A centred message for a pane with nothing in it. Never blank: an empty pane
+// with no explanation reads as a broken application.
+component EmptyState inherits Rectangle {
+    in property <string> message: "";
+    in property <string> hint: "";
+
+    width: 100%;
+    height: 100%;
+
+    VerticalLayout {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        padding-left: 20px;
+        padding-right: 20px;
+        spacing: 6px;
+        alignment: center;
+
+        Text {
+            text: root.message;
+            color: VaaniColors.ink-dim;
+            font-size: 14px;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.hint;
+            color: VaaniColors.ink-dim;
+            font-size: 11px;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// One job in the list. Carries its own glyph, word, phase, progress and error
+// recovery, so a row is comprehensible with the colour removed.
+component JobRowView inherits Rectangle {
+    in property <JobRow> data;
+
+    callback clicked();
+    callback remove-clicked();
+
+    height: 80px;
+    background: self.data.is-selected ? VaaniColors.selected
+        : touch.has-hover ? VaaniColors.line.with-alpha(0.35)
+        : VaaniColors.raised;
+    forward-focus: i-focus;
+
+    // The selection marker is a bar, not just a tint, for the same reason the
+    // status glyph exists.
+    Rectangle {
+        width: 3px;
+        height: parent.height;
+        background: root.data.is-selected ? VaaniColors.selected-ink : transparent;
+    }
+
+    VerticalLayout {
+        padding-left: 10px;
+        padding-right: 8px;
+        padding-top: 7px;
+        padding-bottom: 7px;
+        spacing: 3px;
+
+        HorizontalLayout {
             padding: 0px;
-            Text { text: root.status; }
-        }
+            spacing: 6px;
 
-        // A hand-rolled bar: `std-widgets.slint` has no progress bar, and a
-        // native one is a rectangle and a width binding.
-        Rectangle {
-            height: 6px;
-            background: #333333;
-            border-radius: 3px;
-            Rectangle {
-                width: parent.width * (root.progress <= 1 ? root.progress : 0);
-                height: parent.height;
-                background: #2f7fd4;
-                border-radius: 3px;
+            Text {
+                text: root.data.status-glyph;
+                color: root.data.is-failed ? VaaniColors.bad
+                    : root.data.is-cancelled ? VaaniColors.idle
+                    : root.data.is-complete ? VaaniColors.ok
+                    : root.data.is-running ? VaaniColors.accent
+                    : VaaniColors.idle;
+                font-size: 13px;
+                vertical-alignment: center;
+            }
+
+            Text {
+                text: root.data.name;
+                color: root.data.is-selected ? VaaniColors.selected-ink : VaaniColors.ink;
+                font-size: 13px;
+                font-weight: 600;
+                horizontal-stretch: 1;
+                wrap: no-wrap;
+                overflow: elide;
+                vertical-alignment: center;
             }
         }
 
-        HorizontalBox {
-            padding: 0px;
+        Text {
+            height: 26px;
+            text: root.data.status-text;
+            color: root.data.is-selected ? VaaniColors.selected-ink : VaaniColors.ink-dim;
+            font-size: 11px;
+            wrap: word-wrap;
+            max-lines: 2;
+            overflow: elide;
+        }
 
-            VerticalBox {
-                padding: 0px;
-                Text { text: "Speakers"; font-weight: 700; }
-                ListView {
-                    for speaker in root.speakers: Text {
-                        text: speaker.name + "  " + speaker.talk-time;
+        HorizontalLayout {
+            padding: 0px;
+            spacing: 6px;
+
+            Meter {
+                width: 84px;
+                bar-height: 5px;
+                visible: root.data.is-running || root.data.is-terminal || root.data.progress >= 0;
+                value: root.data.progress-indeterminate ? -1 : max(root.data.progress, 0);
+                fill: root.data.is-failed ? VaaniColors.bad
+                    : root.data.is-cancelled ? VaaniColors.idle
+                    : root.data.is-complete ? VaaniColors.ok
+                    : VaaniColors.accent;
+            }
+
+            Text {
+                text: root.data.progress-text != "" ? root.data.progress-text : root.data.phase-label;
+                color: root.data.is-selected ? VaaniColors.selected-ink : VaaniColors.ink-dim;
+                font-size: 10px;
+                wrap: no-wrap;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+
+            Text {
+                text: root.data.eta-text;
+                color: root.data.is-selected ? VaaniColors.selected-ink : VaaniColors.ink-dim;
+                font-size: 10px;
+                wrap: no-wrap;
+                overflow: elide;
+                horizontal-stretch: 1;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+        }
+
+        if root.data.error-recovery != "": Text {
+            height: 22px;
+            text: "What to do: " + root.data.error-recovery;
+            color: root.data.is-selected ? VaaniColors.selected-ink : VaaniColors.ink-dim;
+            font-size: 10px;
+            font-italic: true;
+            wrap: word-wrap;
+            max-lines: 1;
+            overflow: elide;
+        }
+    }
+
+    FocusRing {
+        x: 1px;
+        y: 1px;
+        width: parent.width - 2px;
+        height: parent.height - 2px;
+        radius: 0px;
+        show: i-focus.has-focus;
+    }
+
+    touch := TouchArea {
+        accessible-role: list-item;
+        accessible-label: root.data.name + ", " + root.data.phase-label + ", " + root.data.status-text
+            + (root.data.eta-text != "" ? ", " + root.data.eta-text : "")
+            + (root.data.progress-text != "" ? ", " + root.data.progress-text : "");
+        accessible-description: root.data.input-path
+            + (root.data.error-recovery != "" ? ". " + root.data.error-recovery : "");
+        accessible-action-default => { root.clicked(); }
+        clicked => { root.clicked(); }
+    }
+
+    remove-button := Rectangle {
+        x: parent.width - 26px;
+        y: 6px;
+        width: 20px;
+        height: 20px;
+        border-radius: 3px;
+        background: remove-touch.has-hover ? VaaniColors.bad : transparent;
+        visible: root.data.is-terminal;
+        forward-focus: remove-focus;
+
+        Text {
+            text: "x";
+            color: remove-touch.has-hover ? VaaniColors.accent-ink : VaaniColors.ink-dim;
+            font-size: 12px;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        remove-touch := TouchArea {
+            accessible-role: button;
+            accessible-label: "Remove " + root.data.name + " from the list";
+            accessible-action-default => { root.remove-clicked(); }
+            clicked => { root.remove-clicked(); }
+        }
+
+        remove-focus := FocusScope {
+            x: 0;
+            width: 0;
+            key-pressed(event) => {
+                if (event.text == Key.Return || event.text == Key.Space || event.text == Key.Delete) {
+                    root.remove-clicked();
+                    return EventResult.accept;
+                }
+                return EventResult.reject;
+            }
+        }
+    }
+
+    i-focus := FocusScope {
+        x: 0;
+        width: 0;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == Key.Space) {
+                root.clicked();
+                return EventResult.accept;
+            } else if (event.text == Key.Delete) {
+                root.remove-clicked();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
+}
+
+// One transcript row. Its `y` and `height` come from the windowing arithmetic in
+// whole lines, so the pane never has to measure text and the delegate count
+// never depends on the transcript's length.
+component TranscriptRowView inherits Rectangle {
+    in property <TranscriptRow> data;
+    in property <length> line-height: 22px;
+
+    callback clicked(extend: bool);
+
+    y: self.data.lines-before * self.line-height;
+    height: self.data.line-count * self.line-height;
+    background: self.data.is-selected ? VaaniColors.selected.with-alpha(0.22)
+        : touch.has-hover ? VaaniColors.line.with-alpha(0.25)
+        : transparent;
+
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: 3px;
+        height: parent.height;
+        background: root.data.is-selected ? VaaniColors.selected : transparent;
+    }
+
+    VerticalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 1px;
+        padding-bottom: 1px;
+        spacing: 0px;
+
+        HorizontalLayout {
+            padding: 0px;
+            spacing: 8px;
+            visible: root.data.speaker != "" || root.data.is-match;
+
+            Text {
+                text: root.data.timestamp;
+                color: VaaniColors.ink-dim;
+                font-size: 11px;
+                font-family: "monospace";
+                wrap: no-wrap;
+                vertical-alignment: center;
+            }
+
+            Text {
+                text: root.data.speaker != "" ? root.data.speaker : "match";
+                color: root.data.is-match ? VaaniColors.accent : VaaniColors.ink;
+                font-size: 11px;
+                font-weight: root.data.is-turn-start ? 600 : 400;
+                wrap: no-wrap;
+                overflow: elide;
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+            }
+        }
+
+        Text {
+            text: root.data.text;
+            color: root.data.is-unattributed ? VaaniColors.ink-dim : VaaniColors.ink;
+            font-size: 13px;
+            // Wrapped, never clipped. A row the windowing arithmetic guessed
+            // short elides, and the detail pane below holds the full text, so
+            // a long segment is always readable.
+            wrap: word-wrap;
+            max-lines: root.data.line-count;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+    }
+
+    touch := TouchArea {
+        accessible-role: list-item;
+        accessible-label: root.data.timestamp
+            + (root.data.speaker != "" ? " " + root.data.speaker : "")
+            + ", " + root.data.text;
+        accessible-description: root.data.is-selected ? "Selected." : "Activate to select.";
+        accessible-action-default => { root.clicked(false); }
+        clicked => { root.clicked(false); }
+        pointer-event(pe) => {
+            // Shift-click extends the selection, which is the behaviour a list
+            // everywhere else already has.
+            if (pe.kind == PointerEventKind.down && pe.modifiers.shift) {
+                root.clicked(true);
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
+}
+
+// One speaker in the right rail. The whole row is the rename affordance,
+// because making people find a small pencil is how speaker renaming ends up a
+// feature nobody uses.
+component SpeakerRowView inherits Rectangle {
+    in property <SpeakerRow> data;
+
+    callback clicked();
+
+    height: 48px;
+    background: self.data.is-selected ? VaaniColors.selected.with-alpha(0.25)
+        : touch.has-hover ? VaaniColors.line.with-alpha(0.3)
+        : transparent;
+    forward-focus: i-focus;
+
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: 3px;
+        height: parent.height;
+        background: root.data.is-selected ? VaaniColors.accent : transparent;
+    }
+
+    VerticalLayout {
+        padding-left: 12px;
+        padding-right: 8px;
+        padding-top: 5px;
+        padding-bottom: 5px;
+        spacing: 3px;
+
+        HorizontalLayout {
+            padding: 0px;
+            spacing: 6px;
+
+            Text {
+                text: root.data.name;
+                color: root.data.is-selected ? VaaniColors.accent : VaaniColors.ink;
+                font-size: 13px;
+                font-weight: root.data.is-named ? 600 : 400;
+                horizontal-stretch: 1;
+                wrap: no-wrap;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+
+            // The generated label stays visible next to a custom name so the
+            // mapping back to the cluster index is never lost.
+            Text {
+                text: root.data.is-named ? "was " + root.data.generated-name : "";
+                color: VaaniColors.ink-dim;
+                font-size: 10px;
+                wrap: no-wrap;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+        }
+
+        HorizontalLayout {
+            padding: 0px;
+            spacing: 6px;
+
+            Meter {
+                width: 60px;
+                bar-height: 4px;
+                visible: root.data.share >= 0;
+                value: root.data.share;
+            }
+
+            Text {
+                text: root.data.talk-time;
+                color: VaaniColors.ink-dim;
+                font-size: 10px;
+                wrap: no-wrap;
+                vertical-alignment: center;
+            }
+
+            Text {
+                text: root.data.share-text;
+                color: VaaniColors.ink-dim;
+                font-size: 10px;
+                wrap: no-wrap;
+                horizontal-alignment: right;
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    FocusRing {
+        x: 1px;
+        y: 1px;
+        width: parent.width - 2px;
+        height: parent.height - 2px;
+        radius: 0px;
+        show: i-focus.has-focus;
+    }
+
+    touch := TouchArea {
+        accessible-role: button;
+        accessible-label: "Rename " + root.data.name;
+        accessible-value: root.data.talk-time + " of talking time"
+            + (root.data.share-text != "" ? ", " + root.data.share-text + " of the total" : "");
+        accessible-description: root.data.is-named
+            ? "Currently named " + root.data.name + ", generated from " + root.data.generated-name
+            : "Not yet named. Activate to give this speaker a name.";
+        accessible-action-default => { root.clicked(); }
+        clicked => { root.clicked(); }
+    }
+
+    i-focus := FocusScope {
+        x: 0;
+        width: 0;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == Key.F2) {
+                root.clicked();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The window
+// ---------------------------------------------------------------------------
+
+export component AppWindow inherits Window {
+    // -- jobs ---------------------------------------------------------------
+    in-out property <[JobRow]> jobs;
+    in property <int> selected-job: -1;
+    in property <int> job-count: 0;
+    in property <bool> can-cancel: false;
+
+    // -- transcript ---------------------------------------------------------
+    // `transcript-window` is the windowed slice the delegate loop draws. It is
+    // never the whole transcript: the Rust side keeps it to what the viewport
+    // can show plus a small overscan, which is what makes a 20,000-word
+    // meeting open instantly.
+    in-out property <[TranscriptRow]> transcript-window;
+    in property <int> transcript-rows-total: 0;
+    in property <int> transcript-lines-total: 0;
+    in property <length> transcript-content-height: 0px;
+    in-out property <length> transcript-scroll-y: 0px;
+    in property <length> transcript-line-height: 22px;
+    in property <int> transcript-selected: -1;
+    in property <string> transcript-summary: "";
+    in property <string> transcript-empty: "No transcript yet";
+    in property <bool> transcript-has-detail: false;
+    in property <string> transcript-detail: "";
+    in property <string> selection-summary: "";
+    in property <bool> can-copy: false;
+    in property <string> match-count: "";
+    in-out property <string> search-text: "";
+
+    // -- speakers -----------------------------------------------------------
+    in-out property <[SpeakerRow]> speakers;
+    in property <int> selected-speaker: -1;
+    in property <int> editing-speaker: -1;
+    in-out property <string> editing-speaker-text: "";
+    in property <string> editing-speaker-label: "";
+
+    // -- input --------------------------------------------------------------
+    in-out property <string> input-path: "";
+    in property <bool> input-accepted: false;
+    in property <bool> can-enqueue: false;
+
+    // -- progress -----------------------------------------------------------
+    in property <bool> busy: false;
+    in property <string> activity: "";
+    in property <float> overall: -1;
+    in property <string> overall-text: "";
+
+    // -- settings and export ------------------------------------------------
+    in property <[string]> model-options;
+    in-out property <int> model-index: 0;
+    in property <[string]> device-options;
+    in-out property <int> device-index: 0;
+    in property <[string]> language-options;
+    in-out property <int> language-index: 0;
+    in-out property <bool> diarize: true;
+    in-out property <int> theme-index: 0; // 0 system, 1 light, 2 dark
+    in property <bool> settings-open: false;
+    in-out property <int> export-format: 0;
+    in property <bool> can-export: false;
+
+    // -- error surface ------------------------------------------------------
+    in property <bool> banner-visible: false;
+    in property <int> banner-level: 0; // 0 info, 1 warning, 2 error
+    in property <string> banner-title: "";
+    in property <string> banner-detail: "";
+    in property <string> banner-recovery: "";
+    in property <string> banner-code: "";
+
+    // -- chrome -------------------------------------------------------------
+    in property <bool> demo-mode: false;
+    in property <string> footer: "";
+    in property <float> scale-factor: 1.0;
+    in property <string> display-scheme: "";
+
+    // -- callbacks (window -> Rust) -----------------------------------------
+    callback browse-input-requested();
+    callback enqueue-requested();
+    callback cancel-requested();
+    callback input-edited(path: string);
+    callback select-job-requested(index: int);
+    callback remove-job-requested(index: int);
+    callback copy-requested();
+    callback select-all-requested();
+    callback find-next-requested();
+    callback find-previous-requested();
+    callback search-edited(query: string);
+    callback select-segment-requested(index: int, extend: bool);
+    callback move-segment-requested(delta: int, extend: bool);
+    callback begin-rename-requested(index: int);
+    callback commit-rename-requested(index: int, name: string);
+    callback cancel-rename-requested();
+    callback export-requested();
+    callback model-selected(value: string);
+    callback device-selected(value: string);
+    callback language-selected(value: string);
+    callback diarize-toggled(on: bool);
+    callback theme-selected(index: int);
+    callback settings-toggled();
+    callback dismiss-banner-requested();
+    // Fired when the transcript viewport moves or resizes, so Rust can
+    // rewindow. Offsets arrive in logical pixels; Rust converts to lines.
+    callback viewport-changed(offset: length, viewport-height: length, width: length);
+
+    title: "VaaniDesk";
+    preferred-width: 1180px;
+    preferred-height: 760px;
+    min-width: 720px;
+    min-height: 480px;
+    background: VaaniColors.surface;
+
+    // The viewport reports movement so Rust can rewindow the transcript. This
+    // fires for wheel, drag, keyboard and for Rust setting the offset itself;
+    // the handler is idempotent, so the feedback loop converges in one step.
+    changed transcript-scroll-y => {
+        root.viewport-changed(self.transcript-scroll-y, transcript-scroll.height, transcript-scroll.width);
+    }
+
+    // Window-level shortcuts live on a focus scope rather than on the Window,
+    // because Slint 1.18's Window has no `key-pressed`. The scope forwards focus
+    // to the file field, so it is first in the tab order and the shortcuts work
+    // from anywhere in the window.
+    shortcuts := FocusScope {
+        forward-focus: path-field;
+
+        key-pressed(event) => {
+            if (event.text == Key.F2) {
+                root.browse-input-requested();
+                return EventResult.accept;
+            } else if (event.text == Key.F5) {
+                root.enqueue-requested();
+                return EventResult.accept;
+            } else if (event.text == Key.Escape && event.modifiers.control) {
+                root.cancel-requested();
+                return EventResult.accept;
+            } else if (event.text == Key.F6) {
+                root.export-requested();
+                return EventResult.accept;
+            } else if (event.text == Key.F3) {
+                if (event.modifiers.shift) {
+                    root.find-previous-requested();
+                } else {
+                    root.find-next-requested();
+                }
+                return EventResult.accept;
+            } else if (event.text == "c" && event.modifiers.control && root.can-copy) {
+                root.copy-requested();
+                return EventResult.accept;
+            } else if (event.text == "a" && event.modifiers.control && root.can-copy) {
+                root.select-all-requested();
+                return EventResult.accept;
+            } else if (event.text == Key.DownArrow || event.text == Key.UpArrow) {
+                // Arrow keys move the transcript selection when nothing inside
+                // the transcript has focus, so a keyboard user can walk the
+                // transcript without first clicking into it.
+                root.move-segment-requested(event.text == Key.DownArrow ? 1 : -1, event.modifiers.shift);
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+
+        // -------------------------------------------------------------------
+        VerticalLayout {
+            padding: 0px;
+            spacing: 0px;
+
+            // -- toolbar -----------------------------------------------------
+            Rectangle {
+                height: 56px;
+                background: VaaniColors.raised;
+
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    padding-top: 10px;
+                    padding-bottom: 10px;
+                    spacing: 8px;
+
+                    ActionButton {
+                        label: "Add file...";
+                        primary: true;
+                        description: "Choose a video or audio file to transcribe. Shortcut F2.";
+                        clicked => { root.browse-input-requested(); }
+                    }
+
+                    path-field := LineEdit {
+                        horizontal-stretch: 1;
+                        min-width: 180px;
+                        text: root.input-path;
+                        placeholder-text: "Path to a video or audio file";
+                        accessible-label: "Input file path";
+                        // A file the product cannot read is called out in words
+                        // as well as by tint, and the field stays editable so
+                        // the path can be corrected rather than re-picked.
+                        accessible-description: root.input-accepted
+                            ? "This looks like a supported media file."
+                            : "This does not look like a supported media file.";
+                        edited(t) => { root.input-path = t; root.input-edited(t); }
+                        accepted(t) => { root.input-path = t; root.input-edited(t); root.enqueue-requested(); }
+                    }
+
+                    ActionButton {
+                        label: root.input-accepted ? "Transcribe" : "Unsupported file";
+                        primary: true;
+                        enabled: root.can-enqueue;
+                        description: "Queue this file for transcription. Shortcut F5.";
+                        clicked => { root.enqueue-requested(); }
+                    }
+
+                    ActionButton {
+                        label: "Cancel";
+                        destructive: true;
+                        enabled: root.can-cancel;
+                        description: "Stop the running job. Shortcut Control Escape.";
+                        clicked => { root.cancel-requested(); }
+                    }
+
+                    ActionButton {
+                        label: root.settings-open ? "Hide settings" : "Settings";
+                        description: "Show model, device and language options.";
+                        clicked => { root.settings-toggled(); }
+                    }
+
+                    ActionButton {
+                        label: "Export";
+                        enabled: root.can-export;
+                        description: "Write the selected transcript to a file. Shortcut F6.";
+                        clicked => { root.export-requested(); }
                     }
                 }
             }
 
-            VerticalBox {
-                padding: 0px;
-                Text { text: "Transcript"; font-weight: 700; }
-                ScrollView {
+            // -- demo notice -------------------------------------------------
+            // A fake backend says so, permanently and in words. A screenshot of
+            // a demo run must never be mistaken for the product.
+            if root.demo-mode: Rectangle {
+                height: 32px;
+                background: VaaniColors.warn.with-alpha(0.18);
+
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 8px;
+
                     Text {
-                        text: root.transcript;
+                        text: "Demo mode: transcripts are labelled sample data, not real speech.";
+                        color: VaaniColors.ink;
+                        font-size: 12px;
                         wrap: word-wrap;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // -- error banner ------------------------------------------------
+            // One banner, not a stack of toasts. Every error carries a recovery
+            // action, so the banner always shows it.
+            if root.banner-visible: Rectangle {
+                height: 96px;
+                background: root.banner-level == 2 ? VaaniColors.bad.with-alpha(0.14)
+                    : root.banner-level == 1 ? VaaniColors.warn.with-alpha(0.16)
+                    : VaaniColors.accent.with-alpha(0.12);
+                accessible-role: banner;
+
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    padding-top: 8px;
+                    padding-bottom: 8px;
+                    spacing: 10px;
+
+                    Text {
+                        // The word carries the severity, so the level survives a
+                        // monochrome display and a screen reader.
+                        text: root.banner-level == 2 ? "ERROR"
+                            : root.banner-level == 1 ? "WARNING"
+                            : "NOTICE";
+                        color: root.banner-level == 2 ? VaaniColors.bad
+                            : root.banner-level == 1 ? VaaniColors.warn
+                            : VaaniColors.accent;
+                        font-weight: 700;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 2px;
+                        padding: 0px;
+
+                        Text {
+                            text: root.banner-title;
+                            color: VaaniColors.ink;
+                            font-weight: 600;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                        if root.banner-detail != "": Text {
+                            text: root.banner-detail;
+                            color: VaaniColors.ink-dim;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                        if root.banner-recovery != "": Text {
+                            text: "What to do: " + root.banner-recovery;
+                            color: VaaniColors.ink;
+                            font-size: 12px;
+                            font-italic: true;
+                            wrap: word-wrap;
+                        }
+                        if root.banner-code != "": Text {
+                            text: "Code: " + root.banner-code;
+                            color: VaaniColors.ink-dim;
+                            font-size: 11px;
+                            wrap: no-wrap;
+                            overflow: elide;
+                        }
+                    }
+
+                    ActionButton {
+                        label: "Dismiss";
+                        clicked => { root.dismiss-banner-requested(); }
+                    }
+                }
+            }
+
+            // -- activity row ------------------------------------------------
+            Rectangle {
+                height: 42px;
+                background: VaaniColors.surface;
+
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 10px;
+
+                    Text {
+                        text: root.activity;
+                        color: VaaniColors.ink;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+
+                    Meter {
+                        width: 180px;
+                        value: root.overall;
+                        fill: root.overall < 0 ? VaaniColors.idle : VaaniColors.accent;
+                    }
+
+                    Text {
+                        text: root.overall-text;
+                        color: VaaniColors.ink-dim;
+                        font-size: 12px;
+                        horizontal-alignment: right;
+                        min-width: 92px;
+                        vertical-alignment: center;
+                        wrap: no-wrap;
+                        overflow: elide;
+                    }
+                }
+            }
+
+            // -- main --------------------------------------------------------
+            HorizontalLayout {
+                padding: 0px;
+                spacing: 0px;
+                vertical-stretch: 1;
+
+                // --- job list ---
+                Rectangle {
+                    preferred-width: 320px;
+                    min-width: 240px;
+                    background: VaaniColors.raised;
+
+                    VerticalLayout {
+                        padding: 0px;
+                        spacing: 0px;
+
+                        Rectangle {
+                            height: 34px;
+                            background: VaaniColors.surface;
+
+                            SectionTitle {
+                                x: 12px;
+                                text: root.job-count == 1 ? "Jobs, 1 total" : "Jobs, " + root.job-count + " total";
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            vertical-stretch: 1;
+                            background: VaaniColors.raised;
+
+                            if root.job-count == 0: EmptyState {
+                                message: "No jobs yet";
+                                hint: "Press F2 or use Add file to queue something.";
+                            }
+
+                            if root.job-count > 0: ListView {
+                                accessible-label: "Transcription jobs";
+
+                                for entry[job-index] in root.jobs: JobRowView {
+                                    data: entry;
+                                    clicked => { root.select-job-requested(job-index); }
+                                    remove-clicked => { root.remove-job-requested(job-index); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    width: 1px;
+                    background: VaaniColors.line;
+                }
+
+                // --- transcript ---
+                Rectangle {
+                    horizontal-stretch: 1;
+                    background: VaaniColors.surface;
+
+                    VerticalLayout {
+                        padding: 0px;
+                        spacing: 0px;
+
+                        // header
+                        Rectangle {
+                            height: 42px;
+                            background: VaaniColors.surface;
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                padding-top: 6px;
+                                padding-bottom: 6px;
+                                spacing: 8px;
+
+                                SectionTitle {
+                                    label: "Transcript";
+                                    vertical-alignment: center;
+                                }
+
+                                Text {
+                                    text: root.transcript-summary;
+                                    color: VaaniColors.ink-dim;
+                                    font-size: 12px;
+                                    wrap: no-wrap;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+
+                                search-field := LineEdit {
+                                    preferred-width: 180px;
+                                    text: root.search-text;
+                                    placeholder-text: "Find in transcript";
+                                    accessible-label: "Find in transcript";
+                                    accessible-description: "Press F3 for the next match, Shift F3 for the previous one.";
+                                    edited(t) => { root.search-text = t; root.search-edited(t); }
+                                    accepted(t) => { root.search-text = t; root.search-edited(t); root.find-next-requested(); }
+                                }
+
+                                ActionButton {
+                                    label: "Previous";
+                                    enabled: root.match-count != "";
+                                    description: "Jump to the previous match. Shortcut Shift F3.";
+                                    clicked => { root.find-previous-requested(); }
+                                }
+
+                                ActionButton {
+                                    label: "Next";
+                                    enabled: root.match-count != "";
+                                    description: "Jump to the next match. Shortcut F3.";
+                                    clicked => { root.find-next-requested(); }
+                                }
+
+                                ActionButton {
+                                    label: "Select all";
+                                    description: "Select every segment so Copy takes all of it.";
+                                    clicked => { root.select-all-requested(); }
+                                }
+
+                                ActionButton {
+                                    label: "Copy";
+                                    primary: true;
+                                    enabled: root.can-copy;
+                                    description: "Copy the selected segments, or the whole transcript if nothing is selected. Shortcut Control C.";
+                                    clicked => { root.copy-requested(); }
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            height: 1px;
+                            background: VaaniColors.line;
+                        }
+
+                        // The scroll viewport. `transcript-window` holds only
+                        // the rows the viewport can show, so the delegate count
+                        // is bounded by the window height, not by the
+                        // transcript's length.
+                        Rectangle {
+                            vertical-stretch: 1;
+                            background: VaaniColors.surface;
+                            clip: true;
+
+                            if root.transcript-rows-total == 0: EmptyState {
+                                message: root.transcript-empty;
+                                hint: "A transcript appears here as soon as the job produces one.";
+                            }
+
+                            transcript-scroll := Flickable {
+                                x: 0;
+                                y: 0;
+                                width: parent.width;
+                                height: parent.height;
+                                content-width: self.width;
+                                content-height: root.transcript-content-height;
+                                content-y <=> root.transcript-scroll-y;
+                                interactive: root.transcript-rows-total > 0;
+                                visible: root.transcript-rows-total > 0;
+
+                                for entry in root.transcript-window: TranscriptRowView {
+                                    data: entry;
+                                    line-height: root.transcript-line-height;
+                                    clicked(extend) => { root.select-segment-requested(entry.index, extend); }
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            height: 1px;
+                            background: VaaniColors.line;
+                        }
+
+                        // The detail pane: the full, unabridged text of the
+                        // selected segment. This is what makes the bounded list
+                        // rows safe: nothing is ever only-available truncated.
+                        if root.transcript-has-detail: Rectangle {
+                            height: 140px;
+                            background: VaaniColors.raised;
+
+                            VerticalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                padding-top: 8px;
+                                padding-bottom: 8px;
+                                spacing: 4px;
+
+                                HorizontalLayout {
+                                    padding: 0px;
+                                    spacing: 8px;
+
+                                    SectionTitle {
+                                        label: "Selected segment";
+                                        vertical-alignment: center;
+                                    }
+
+                                    Text {
+                                        text: root.selection-summary;
+                                        color: VaaniColors.ink-dim;
+                                        font-size: 11px;
+                                        horizontal-stretch: 1;
+                                        wrap: word-wrap;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                detail-scroll := ScrollView {
+                                    vertical-stretch: 1;
+
+                                    Text {
+                                        width: detail-scroll.visible-width;
+                                        text: root.transcript-detail;
+                                        color: VaaniColors.ink;
+                                        font-size: 13px;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    width: 1px;
+                    background: VaaniColors.line;
+                }
+
+                // --- right rail: speakers, then settings ---
+                Rectangle {
+                    preferred-width: 300px;
+                    min-width: 240px;
+                    background: VaaniColors.raised;
+
+                    VerticalLayout {
+                        padding: 0px;
+                        spacing: 0px;
+
+                        Rectangle {
+                            height: 34px;
+                            background: VaaniColors.surface;
+
+                            SectionTitle {
+                                x: 12px;
+                                text: root.speakers.length == 1
+                                    ? "Speakers, 1 found"
+                                    : "Speakers, " + root.speakers.length + " found";
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // Rename editor. An inline panel rather than a modal: a
+                        // dialog for a two-word edit is three clicks too many,
+                        // and an inline one keeps the row being renamed
+                        // visible.
+                        if root.editing-speaker >= 0: Rectangle {
+                            height: 90px;
+                            background: VaaniColors.surface;
+
+                            VerticalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                padding-top: 6px;
+                                padding-bottom: 6px;
+                                spacing: 6px;
+
+                                Text {
+                                    text: "Name for " + root.editing-speaker-label;
+                                    color: VaaniColors.ink-dim;
+                                    font-size: 11px;
+                                    wrap: word-wrap;
+                                }
+
+                                rename-field := LineEdit {
+                                    text: root.editing-speaker-text;
+                                    placeholder-text: "for example Priya";
+                                    horizontal-stretch: 1;
+                                    accessible-label: "Speaker name";
+                                    accessible-description: "Leave this empty to go back to the generated label.";
+                                    edited(t) => { root.editing-speaker-text = t; }
+                                    accepted(t) => { root.editing-speaker-text = t; root.commit-rename-requested(root.editing-speaker, t); }
+                                }
+
+                                HorizontalLayout {
+                                    padding: 0px;
+                                    spacing: 6px;
+
+                                    ActionButton {
+                                        label: "Save";
+                                        primary: true;
+                                        clicked => { root.commit-rename-requested(root.editing-speaker, root.editing-speaker-text); }
+                                    }
+
+                                    ActionButton {
+                                        label: "Cancel";
+                                        clicked => { root.cancel-rename-requested(); }
+                                    }
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            vertical-stretch: 1;
+                            background: VaaniColors.raised;
+                            clip: true;
+
+                            if root.speakers.length == 0: EmptyState {
+                                message: "No speakers yet";
+                                hint: "Speaker separation runs after transcription, or can be turned off in Settings.";
+                            }
+
+                            if root.speakers.length > 0: ListView {
+                                accessible-label: "Speakers";
+
+                                for entry in root.speakers: SpeakerRowView {
+                                    data: entry;
+                                    clicked => { root.begin-rename-requested(entry.index); }
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            height: 1px;
+                            background: VaaniColors.line;
+                        }
+
+                        // --- export ---
+                        Rectangle {
+                            height: 76px;
+                            background: VaaniColors.surface;
+
+                            VerticalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                padding-top: 8px;
+                                padding-bottom: 8px;
+                                spacing: 6px;
+
+                                SectionTitle { label: "Export"; }
+
+                                HorizontalLayout {
+                                    padding: 0px;
+                                    spacing: 8px;
+
+                                    ComboBox {
+                                        horizontal-stretch: 1;
+                                        model: ["Plain text (.txt)", "Markdown (.md)", "SubRip subtitles (.srt)", "WebVTT subtitles (.vtt)", "JSON (.json)"];
+                                        current-index <=> root.export-format;
+                                        enabled: root.can-export;
+                                        accessible-label: "Export format";
+                                    }
+
+                                    ActionButton {
+                                        label: "Export...";
+                                        primary: true;
+                                        enabled: root.can-export;
+                                        clicked => { root.export-requested(); }
+                                    }
+                                }
+                            }
+                        }
+
+                        // --- settings ---
+                        if root.settings-open: Rectangle {
+                            height: 244px;
+                            background: VaaniColors.surface;
+
+                            VerticalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                padding-top: 8px;
+                                padding-bottom: 8px;
+                                spacing: 6px;
+
+                                SectionTitle { label: "Settings"; }
+
+                                Text {
+                                    text: "Speech model";
+                                    color: VaaniColors.ink-dim;
+                                    font-size: 11px;
+                                }
+                                ComboBox {
+                                    model: root.model-options;
+                                    current-index <=> root.model-index;
+                                    accessible-label: "Speech model";
+                                    selected(value) => { root.model-selected(value); }
+                                }
+
+                                Text {
+                                    text: "Processing device";
+                                    color: VaaniColors.ink-dim;
+                                    font-size: 11px;
+                                }
+                                ComboBox {
+                                    model: root.device-options;
+                                    current-index <=> root.device-index;
+                                    accessible-label: "Processing device";
+                                    selected(value) => { root.device-selected(value); }
+                                }
+
+                                Text {
+                                    text: "Spoken language";
+                                    color: VaaniColors.ink-dim;
+                                    font-size: 11px;
+                                }
+                                ComboBox {
+                                    model: root.language-options;
+                                    current-index <=> root.language-index;
+                                    accessible-label: "Spoken language";
+                                    selected(value) => { root.language-selected(value); }
+                                }
+
+                                HorizontalLayout {
+                                    padding: 0px;
+                                    spacing: 8px;
+
+                                    CheckBox {
+                                        text: "Separate speakers";
+                                        checked <=> root.diarize;
+                                        accessible-description: "Runs speaker diarization after transcription. The transcript is complete without it.";
+                                        toggled => { root.diarize-toggled(self.checked); }
+                                    }
+
+                                    ComboBox {
+                                        horizontal-stretch: 1;
+                                        model: ["Theme: system", "Theme: light", "Theme: dark"];
+                                        current-index <=> root.theme-index;
+                                        accessible-label: "Colour theme";
+                                        selected(value) => { root.theme-selected(root.theme-index); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // -- status bar --------------------------------------------------
+            Rectangle {
+                height: 26px;
+                background: VaaniColors.raised;
+
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 12px;
+
+                    Text {
+                        text: root.footer;
+                        color: VaaniColors.ink-dim;
+                        font-size: 11px;
+                        horizontal-stretch: 1;
+                        wrap: no-wrap;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        // The scale factor is shown because a window that is
+                        // legible at 150% and illegible at 100% is a bug users
+                        // report as "it looks wrong on my laptop", and seeing
+                        // the number is the first thing anyone asks for.
+                        text: root.display-scheme + ", " + round(root.scale-factor * 100) + "%";
+                        color: VaaniColors.ink-dim;
+                        font-size: 11px;
+                        wrap: no-wrap;
+                        vertical-alignment: center;
                     }
                 }
             }
