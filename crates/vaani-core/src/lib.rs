@@ -16,7 +16,8 @@
 //! | [`error`] | the user-facing error taxonomy | anything; it is the leaf |
 //! | [`transcript`] | `Transcript`/`Segment`/`Word`/`Speaker`/`Time` | ONNX, Slint, SQL |
 //! | [`job`] | the job lifecycle, `Progress`, `CancelToken` | how any phase is implemented |
-//! | [`media`] | `MediaInfo`, `Language` | which backend produced the info |
+//! | [`media`] | `MediaInfo`, `AudioBuffer`, `Language` | which backend produced the info |
+//! | [`pipeline`] | the stage traits every subsystem implements | anything concrete |
 //!
 //! ## Invariants that live here
 //!
@@ -37,6 +38,7 @@
 pub mod error;
 pub mod job;
 pub mod media;
+pub mod pipeline;
 pub mod transcript;
 
 pub use error::{ErrorCode, Result, UserFacingError, VaaniError, err};

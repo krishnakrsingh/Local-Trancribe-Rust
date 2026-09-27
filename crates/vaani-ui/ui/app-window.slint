@@ -1,0 +1,99 @@
+// The root window. Structure and state names are the integration surface with
+// the application layer, so they are spelled out here rather than improvised
+// later.
+import { Button, VerticalBox, HorizontalBox, ListView, ScrollView } from "std-widgets.slint";
+
+export struct SpeakerRow {
+    index: int,
+    name: string,
+    talk-time: string,
+}
+
+// Job lifecycle, mirroring vaani_core::JobPhase. Keeping the two in step is a
+// deliberate duplication: the UI must not depend on the domain crate's
+// enums being serde-serialisable across a Slint boundary.
+export enum Phase {
+    Queued,
+    Probing,
+    ExtractingAudio,
+    DetectingSpeech,
+    Transcribing,
+    Diarizing,
+    Postprocessing,
+    Structuring,
+    Saving,
+    Exporting,
+    Done,
+    Cancelled,
+    Failed,
+}
+
+export component AppWindow inherits Window {
+    in-out property <[SpeakerRow]> speakers;
+    in-out property <Phase> phase;
+    in-out property <float> progress;
+    in-out property <string> status;
+    in-out property <string> transcript;
+    in property <bool> busy;
+
+    title: "VaaniDesk";
+    preferred-width: 1100px;
+    preferred-height: 720px;
+
+    VerticalBox {
+        padding: 12px;
+        spacing: 10px;
+
+        HorizontalBox {
+            alignment: start;
+            Button { text: "Add file"; enabled: !root.busy; }
+            Button { text: "Transcribe"; enabled: !root.busy; }
+            Button { text: "Cancel"; enabled: root.busy; }
+            Button { text: "Export"; enabled: !root.busy; }
+        }
+
+        HorizontalBox {
+            padding: 0px;
+            Text { text: root.status; }
+        }
+
+        // A hand-rolled bar: `std-widgets.slint` has no progress bar, and a
+        // native one is a rectangle and a width binding.
+        Rectangle {
+            height: 6px;
+            background: #333333;
+            border-radius: 3px;
+            Rectangle {
+                width: parent.width * (root.progress <= 1 ? root.progress : 0);
+                height: parent.height;
+                background: #2f7fd4;
+                border-radius: 3px;
+            }
+        }
+
+        HorizontalBox {
+            padding: 0px;
+
+            VerticalBox {
+                padding: 0px;
+                Text { text: "Speakers"; font-weight: 700; }
+                ListView {
+                    for speaker in root.speakers: Text {
+                        text: speaker.name + "  " + speaker.talk-time;
+                    }
+                }
+            }
+
+            VerticalBox {
+                padding: 0px;
+                Text { text: "Transcript"; font-weight: 700; }
+                ScrollView {
+                    Text {
+                        text: root.transcript;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+    }
+}

@@ -4,10 +4,19 @@ members = [
     "crates/vaani-core",
     "crates/vaani-inference",
     "crates/vaani-asr",
+    "crates/vaani-media",
+    "crates/vaani-vad",
+    "crates/vaani-diarization",
+    "crates/vaani-storage",
+    "crates/vaani-export",
+    "crates/vaani-models",
+    "crates/vaani-cli",
+    "crates/vaani-ui",
 ]
-# Members are added as each crate is created, one at a time, so that a
-# `cargo check` failure always points at a single new crate rather than at
-# fifteen half-written ones. `scripts/build_doctor.ps1` runs the full workspace.
+# Every crate exists as a manifest-only skeleton so that eight agents can work
+# in parallel against real dependency graphs instead of guessing. `scripts/
+# build_doctor.ps1` runs the full workspace and is the only gate that is allowed
+# to be red while agents are mid-flight.
 
 # Central dependency versions. Adding a third-party crate means adding it here
 # once with a note, not sprinkled across manifests.
@@ -25,6 +34,7 @@ vaani-storage = { path = "crates/vaani-storage" }
 vaani-models = { path = "crates/vaani-models" }
 vaani-updater = { path = "crates/vaani-updater" }
 vaani-app = { path = "crates/vaani-app" }
+vaani-ui = { path = "crates/vaani-ui" }
 
 anyhow = "1"
 thiserror = "2"
@@ -81,6 +91,17 @@ ndarray = "0.17"
 # f16 boundary tensors. Used only at the ONNX graph edge; all numerics in the
 # media and front-end crates stay f32.
 half = "2"
+# The native UI. `backend-winit` gives a real window; the software renderer is
+# the fallback that must work on a machine with no usable GPU, which is every
+# machine before CUDA is installed.
+slint = { version = "1", default-features = false, features = [
+    "compat-1-2",
+    "std",
+    "backend-default",
+    "renderer-software",
+    "unstable-winit-030",
+] }
+slint-build = "1"
 
 [workspace.lints.rust]
 # The whole workspace is `unsafe`-averse by policy; any `unsafe` needs a

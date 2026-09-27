@@ -1,0 +1,24 @@
+[package]
+name = "vaani-cli"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "vaani-cli for VaaniDesk."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+vaani-core = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+dirs = { workspace = true }
+time = { workspace = true }
+walkdir = { workspace = true }
+
+[lints]
+workspace = true

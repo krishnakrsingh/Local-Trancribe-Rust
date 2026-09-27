@@ -1,0 +1,25 @@
+[package]
+name = "vaani-models"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "vaani-models for VaaniDesk."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+vaani-core = { workspace = true }
+vaani-inference = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+dirs = { workspace = true }
+url = { workspace = true }
+bytes = { workspace = true }
+
+[lints]
+workspace = true

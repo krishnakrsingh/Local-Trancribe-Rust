@@ -6,6 +6,8 @@
 //! report. Splitting it would guarantee drift.
 
 use serde::{Deserialize, Serialize};
+
+use crate::transcript::Time;
 use std::fmt;
 
 /// Languages the product can name in its UI.
@@ -161,6 +163,101 @@ impl MediaInfo {
     }
 }
 
+/// A decoded audio buffer handed between pipeline stages.
+///
+/// # The invariant that matters
+///
+/// `start_time` is where this buffer begins in the **source media**, and every
+/// time any stage produces is in source-media coordinates. The one exception is
+/// the ASR stage, whose decoder frame indices are chunk-relative by
+/// construction; it rebases through `Transcript::push_chunk`. Getting this
+/// wrong in either direction is the "transcript is three minutes out of sync"
+/// family of bugs, so the field is not optional and not inferable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[allow(missing_docs)] // field names are the documentation
+pub struct AudioBuffer {
+    /// Interleaved samples. `channels == 1` means mono.
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+    pub channels: u16,
+    /// Where this buffer starts in the source media.
+    pub start_time: Time,
+}
+
+impl AudioBuffer {
+    /// A mono buffer, which is what every model stage wants.
+    pub fn mono(samples: Vec<f32>, sample_rate: u32, start_time: Time) -> Self {
+        Self {
+            samples,
+            sample_rate,
+            channels: 1,
+            start_time,
+        }
+    }
+
+    /// Sample count per channel.
+    #[must_use]
+    pub fn frames(&self) -> usize {
+        if self.channels == 0 {
+            return 0;
+        }
+        self.samples.len() / self.channels as usize
+    }
+
+    /// Length of this buffer, from the sample count rather than the container
+    /// header. A container's declared duration is frequently wrong for MKV and
+    /// sometimes for M4A.
+    #[must_use]
+    pub fn duration(&self) -> Time {
+        if self.sample_rate == 0 {
+            return Time::ZERO;
+        }
+        // Round rather than truncate: a 3-hour recording must not lose a
+        // millisecond per chunk boundary.
+        Time::from_millis((self.frames() as u64 * 1000 / self.sample_rate as u64) as i64)
+    }
+
+    /// Where a sample index within this buffer falls in the source media.
+    #[must_use]
+    pub fn time_of(&self, sample_index: usize) -> Time {
+        if self.sample_rate == 0 {
+            return self.start_time;
+        }
+        self.start_time.saturating_add(Time(
+            (sample_index as u64 * 1000 / self.sample_rate as u64) as i64,
+        ))
+    }
+
+    /// Mono samples in `[start, end)`, times inclusive of `start` and exclusive
+    /// of `end`. Times are source-media coordinates; the result starts at zero,
+    /// so it is chunk-local by construction.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `channels != 1`. Downmixing is the media stage's job, and
+    /// silently averaging here would hide a pipeline that forgot to do it.
+    #[must_use]
+    pub fn slice_mono(&self, start: Time, end: Time) -> Vec<f32> {
+        assert_eq!(
+            self.channels, 1,
+            "slice_mono requires a mono buffer; downmixing is the media stage's job"
+        );
+        let lo = (start
+            .as_millis()
+            .saturating_sub(self.start_time.as_millis())
+            * self.sample_rate as i64
+            / 1000)
+            .max(0) as usize;
+        let hi = (end.as_millis().saturating_sub(self.start_time.as_millis())
+            * self.sample_rate as i64
+            / 1000)
+            .max(0) as usize;
+        let lo = lo.min(self.samples.len());
+        let hi = hi.clamp(lo, self.samples.len());
+        self.samples[lo..hi].to_vec()
+    }
+}
+
 /// The realtime factor (RTF) we assume before we have measured anything on the
 /// user's machine: `processing_time / audio_duration`, lower is faster.
 ///
@@ -221,6 +318,60 @@ mod tests {
         // infinite, or negative estimates.
         assert_eq!(info.estimate_transcription_ms(0.0), Some(7_200));
         assert_eq!(info.estimate_transcription_ms(-5.0), Some(7_200));
+    }
+
+    #[test]
+    fn audio_buffer_duration_comes_from_the_sample_count() {
+        let b = AudioBuffer::mono(vec![0.0; 16_000], 16_000, Time::ZERO);
+        assert_eq!(b.duration(), Time(1000));
+        assert_eq!(b.frames(), 16_000);
+        // A zero sample rate must not divide by zero.
+        let b = AudioBuffer::mono(vec![0.0; 100], 0, Time::ZERO);
+        assert_eq!(b.duration(), Time::ZERO);
+    }
+
+    #[test]
+    fn audio_buffer_times_are_absolute_not_chunk_local() {
+        // A buffer starting at 5 minutes must report absolute times. Getting
+        // this wrong is the transcript-drift family of bugs.
+        let b = AudioBuffer::mono(vec![0.0; 16_000], 16_000, Time(300_000));
+        assert_eq!(b.time_of(0), Time(300_000));
+        assert_eq!(b.time_of(8_000), Time(300_500));
+        assert_eq!(b.duration(), Time(1000));
+    }
+
+    #[test]
+    fn slice_mono_is_chunk_local_but_takes_absolute_times() {
+        let b = AudioBuffer::mono(
+            (0..32_000).map(|i| i as f32).collect(),
+            16_000,
+            Time(10_000),
+        );
+        // Absolute [11s, 12s) is chunk-relative samples 16_000..32_000.
+        let s = b.slice_mono(Time(11_000), Time(12_000));
+        assert_eq!(s.len(), 16_000);
+        assert_eq!(s[0], 16_000.0);
+    }
+
+    #[test]
+    fn slice_mono_clamps_to_the_available_samples() {
+        // A VAD segment that runs past the end of a chunk must return what
+        // exists rather than panicking.
+        let b = AudioBuffer::mono(vec![0.0; 1_000], 16_000, Time::ZERO);
+        assert_eq!(b.slice_mono(Time(0), Time(10_000)).len(), 1_000);
+        assert_eq!(b.slice_mono(Time(5_000), Time(6_000)).len(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "downmixing is the media stage's job")]
+    fn slice_mono_refuses_stereo_rather_than_silently_downmixing() {
+        let b = AudioBuffer {
+            samples: vec![0.0; 4],
+            sample_rate: 16_000,
+            channels: 2,
+            start_time: Time::ZERO,
+        };
+        let _ = b.slice_mono(Time::ZERO, Time(1));
     }
 
     #[test]

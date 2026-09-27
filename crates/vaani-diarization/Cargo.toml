@@ -1,0 +1,22 @@
+[package]
+name = "vaani-diarization"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "vaani-diarization for VaaniDesk."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+vaani-core = { workspace = true }
+vaani-inference = { workspace = true }
+ort = { workspace = true }
+ndarray = { workspace = true }
+rustfft = { workspace = true }
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true
