@@ -5821,6 +5821,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+ "vaani-app",
  "vaani-asr",
  "vaani-core",
  "vaani-diarization",
@@ -5830,6 +5831,16 @@ dependencies = [
  "vaani-models",
  "vaani-storage",
  "vaani-vad",
+]
+
+[[package]]
+name = "vaani-segment"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tempfile",
+ "tracing",
+ "vaani-core",
 ]
 
 [[package]]

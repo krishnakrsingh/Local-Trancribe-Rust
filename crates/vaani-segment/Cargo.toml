@@ -1,0 +1,19 @@
+[package]
+name = "vaani-segment"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "Groups recognised words into readable, attributable transcript segments."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+vaani-core = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
