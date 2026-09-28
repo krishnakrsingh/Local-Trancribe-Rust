@@ -16,6 +16,7 @@ members = [
     "crates/vaani-ui",
     "crates/vaani-qa",
     "crates/vaani-segment",
+    "crates/vaani-desktop",
 ]
 # Every crate exists as a manifest-only skeleton so that eight agents can work
 # in parallel against real dependency graphs instead of guessing. `scripts/
@@ -41,6 +42,7 @@ vaani-app = { path = "crates/vaani-app" }
 vaani-ui = { path = "crates/vaani-ui" }
 vaani-qa = { path = "crates/vaani-qa" }
 vaani-segment = { path = "crates/vaani-segment" }
+vaani-desktop = { path = "crates/vaani-desktop" }
 
 anyhow = "1"
 thiserror = "2"
@@ -108,6 +110,11 @@ slint = { version = "1", default-features = false, features = [
     "unstable-winit-030",
 ] }
 slint-build = "1"
+# The native file dialog. `rfd` is not in the local registry cache and this
+# build machine has no network, so the desktop app drives `IFileOpenDialog`
+# through the `windows` crate instead - which is the same dialog the shell
+# shows, with no extra dependency and no vendored copy of one.
+arboard = "3"
 
 [workspace.lints.rust]
 # The whole workspace is `unsafe`-averse by policy; any `unsafe` needs a

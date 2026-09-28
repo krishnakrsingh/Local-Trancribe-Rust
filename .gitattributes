@@ -1,0 +1,36 @@
+# Normalise line endings in the repository itself, not per-machine.
+#
+# Without this, `core.autocrlf=true` on Windows checked every text file out as
+# CRLF while the index held LF, so `git status` reported ~100 files as modified
+# when not one byte of content had changed. That is not cosmetic: agents read
+# `git status` to decide what they own, and a status that lies about 100 files
+# trains everyone to ignore it.
+#
+# `text=auto` lets git detect text vs binary. `eol=lf` pins the working tree to
+# LF on every platform, including this one, so what is committed is what is
+# read. Windows tools that require CRLF (PowerShell, `.ps1`, `.iss`) are pinned
+# explicitly below.
+* text=auto eol=lf
+
+# Shell and CI scripts: the shell wants LF even on Windows.
+*.sh text eol=lf
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+
+# Windows installer scripts are read by Inno Setup, which is happier with CRLF.
+*.iss text eol=crlf
+
+# Binary assets. Never touched by the text filter.
+*.png binary
+*.jpg binary
+*.ico binary
+*.exe binary
+*.dll binary
+*.onnx binary
+*.f32 binary
+*.wav binary
+*.mp4 binary
+
+# Golden fixtures are data, not text. Their digests are checked by
+# `vaani-qa`'s golden guard, and a CRLF round-trip must never change one.
+tests/fixtures/** -text

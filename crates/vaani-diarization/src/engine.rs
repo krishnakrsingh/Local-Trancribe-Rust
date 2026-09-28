@@ -395,17 +395,29 @@ impl HeuristicDiarizer {
 
         // --- [4] smoothing and turns ---------------------------------------
         let smooth_started = Instant::now();
-        let filtered = smooth::median_filter(&frame_labels, cfg.effective_median_filter_frames());
-        let turns = smooth::encode_turns(
+        let filtered = smooth::median_filter_cancellable(
+            &frame_labels,
+            cfg.effective_median_filter_frames(),
+            || self.is_cancelled(cancel),
+            poll,
+        );
+        let turns = smooth::encode_turns_cancellable(
             &filtered,
             &active,
             &frame_labels,
             |i| Time::from_millis((start_ms + fe.frame_time_ms(usable.start + i)).max(0)),
             frame_ms,
+            || self.is_cancelled(cancel),
+            poll,
         );
         let turns = smooth::absorb_short_turns(turns, cfg.clusters.min_turn_ms);
         let turns = smooth::sanitise(turns);
         let spans: Vec<SpeakerSpan> = turns.iter().map(smooth::Turn::to_span).collect();
+        // The two filters above stop early on a cancel and hand back a short
+        // `filtered` and a partial `turns`. Without this check a cancelled run
+        // would sail on and return a confident transcript of the first half of
+        // the meeting, which is the one outcome worse than an error.
+        self.check(cancel)?;
         timings.smooth_ms = smooth_started.elapsed().as_millis() as u64;
         progress(0.95);
 
@@ -500,6 +512,13 @@ impl HeuristicDiarizer {
         let mut window_vec = vec![0f32; layout.total];
 
         let mut lo = 0usize;
+        // Frames walked since the last cancellation check, not windows. The
+        // distinction is the whole bug this comment exists to prevent:
+        // `cancel_poll_frames` is 50 *frames* -- 0.5 s of audio -- and counting
+        // windows instead made the real interval 50 windows, which at a 1.5 s
+        // window and a 0.75 s hop is 37.5 s of audio. On a 90-second fixture
+        // that is two checks in the entire run, and a cancel waited 5.4 s to be
+        // noticed while the stage's own documentation promised half a second.
         let mut since = 0usize;
         while lo < n {
             let hi = (lo + w).min(n);
@@ -510,6 +529,14 @@ impl HeuristicDiarizer {
                     continue;
                 }
                 act += 1;
+                since += 1;
+                if since >= poll {
+                    since = 0;
+                    // `Err`, never an empty `Vec`: an empty window list is this
+                    // function's "the recording is silence" answer, and a
+                    // cancelled run must not be reported as one.
+                    self.check(cancel)?;
+                }
                 // `i` is the offset *within this window's slice* of `active`,
                 // so the absolute frame index needs `lo` added. Leaving it off
                 // makes every window after the first analyse the audio under
@@ -561,12 +588,7 @@ impl HeuristicDiarizer {
                     },
                 });
             }
-            since += 1;
-            if since >= poll {
-                since = 0;
-                self.check(cancel)?;
-                progress(0.15 + 0.55 * lo as f64 / n.max(1) as f64);
-            }
+            progress(0.15 + 0.55 * lo as f64 / n.max(1) as f64);
             lo += hop;
         }
 

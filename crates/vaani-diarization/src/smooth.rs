@@ -81,6 +81,30 @@ impl Turn {
 /// file is exactly where a VAD hangover already put a boundary.
 #[must_use]
 pub fn median_filter(labels: &[usize], width: usize) -> Vec<usize> {
+    median_filter_cancellable(labels, width, || false, usize::MAX)
+}
+
+/// [`median_filter`], abandoning the work if `cancelled` fires.
+///
+/// `poll` is counted in input frames, as it is everywhere else in this crate.
+///
+/// The filter is O(labels x width) and runs over the whole recording after the
+/// windows have already been embedded and clustered, which makes it the one
+/// place in the stage where a cancel can otherwise be ignored for seconds on a
+/// long file. Polling here is what keeps `HeuristicDiarizer`'s promise -- a
+/// check at least every 50 frames -- true of the stage and not just of its
+/// first three phases.
+///
+/// A cancelled run returns a short `Vec`, padded with zeros: the caller cannot
+/// tell a cancellation from a real result by looking at the labels, which is
+/// why the engine checks the token again immediately after calling this.
+#[must_use]
+pub fn median_filter_cancellable(
+    labels: &[usize],
+    width: usize,
+    mut cancelled: impl FnMut() -> bool,
+    poll: usize,
+) -> Vec<usize> {
     if labels.is_empty() {
         return Vec::new();
     }
@@ -93,9 +117,14 @@ pub fn median_filter(labels: &[usize], width: usize) -> Vec<usize> {
         return labels.to_vec();
     }
     let half = w / 2;
+    let poll = poll.max(1);
     let mut out = vec![0usize; labels.len()];
     let mut buf: Vec<usize> = Vec::with_capacity(w);
     for (i, slot) in out.iter_mut().enumerate() {
+        if i % poll == 0 && cancelled() {
+            out.truncate(i);
+            return out;
+        }
         buf.clear();
         let lo = i.saturating_sub(half);
         let hi = (i + half + 1).min(labels.len());
@@ -124,9 +153,43 @@ pub fn encode_turns(
     frame_time: impl Fn(usize) -> Time,
     frame_ms: i64,
 ) -> Vec<Turn> {
+    encode_turns_cancellable(
+        labels,
+        active,
+        raw_labels,
+        frame_time,
+        frame_ms,
+        || false,
+        usize::MAX,
+    )
+}
+
+/// [`encode_turns`], abandoning the work if `cancelled` fires.
+///
+/// `poll` is counted in input frames. This is the other O(frames) stretch of
+/// the stage, and it is the one that actually scales with recording length: the
+/// walk visits every frame, and `agreement` re-reads the raw labels for each
+/// turn. As with [`median_filter_cancellable`], a cancelled run returns the
+/// turns found so far and the caller re-checks the token before using them.
+#[must_use]
+pub fn encode_turns_cancellable(
+    labels: &[usize],
+    active: &[bool],
+    raw_labels: &[usize],
+    frame_time: impl Fn(usize) -> Time,
+    frame_ms: i64,
+    mut cancelled: impl FnMut() -> bool,
+    poll: usize,
+) -> Vec<Turn> {
+    let poll = poll.max(1);
     let mut turns: Vec<Turn> = Vec::new();
     let mut i = 0usize;
+    let mut walked = 0usize;
     while i < labels.len() {
+        if walked.is_multiple_of(poll) && cancelled() {
+            return merge_adjacent(turns);
+        }
+        walked += 1;
         if !active.get(i).copied().unwrap_or(false) {
             i += 1;
             continue;
@@ -372,6 +435,83 @@ mod tests {
     fn median_filter_of_nothing_is_nothing() {
         assert!(median_filter(&[], 5).is_empty());
         assert_eq!(median_filter(&[3], 5), vec![3]);
+    }
+
+    #[test]
+    fn a_median_filter_cancelled_midway_stops_instead_of_finishing() {
+        // A three-hour recording is 1.08 M frames, and the filter is O(frames x
+        // width). Without a poll in here a cancel waits for the whole thing.
+        let labels: Vec<usize> = (0..200_000).map(|i| i / 1_000 % 2).collect();
+        let mut polls = 0u32;
+        let out = median_filter_cancellable(
+            &labels,
+            21,
+            || {
+                polls += 1;
+                polls > 3
+            },
+            50,
+        );
+        assert!(
+            out.len() < labels.len(),
+            "a cancelled filter returned all {} frames",
+            labels.len()
+        );
+        // The engine re-checks the token right after this returns, so a short
+        // result is safe; what must not happen is a full-length one.
+        assert!(out.len() <= 200);
+    }
+
+    #[test]
+    fn an_uncancelled_median_filter_is_the_plain_one() {
+        let labels: Vec<usize> = (0..1_000).map(|i| i / 100 % 2).collect();
+        assert_eq!(
+            median_filter_cancellable(&labels, 5, || false, usize::MAX),
+            median_filter(&labels, 5)
+        );
+    }
+
+    #[test]
+    fn encode_turns_cancelled_midway_returns_only_what_it_walked() {
+        let labels = vec![0usize; 100_000];
+        let active = vec![true; 100_000];
+        let mut polls = 0u32;
+        let turns = encode_turns_cancellable(
+            &labels,
+            &active,
+            &labels,
+            |i| t(i as i64 * 10),
+            10,
+            || {
+                polls += 1;
+                polls > 2
+            },
+            50,
+        );
+        assert!(
+            turns.len() < 2,
+            "a cancelled encode_turns produced {} turns",
+            turns.len()
+        );
+    }
+
+    #[test]
+    fn an_uncancelled_encode_turns_is_the_plain_one() {
+        let labels = vec![0, 0, 0, 1, 1, 1, 0, 0];
+        let active = vec![true; 8];
+        assert_eq!(
+            encode_turns_cancellable(
+                &labels,
+                &active,
+                &labels,
+                |i| t(i as i64 * 10),
+                10,
+                || false,
+                usize::MAX
+            )
+            .len(),
+            encode_turns(&labels, &active, &labels, |i| t(i as i64 * 10), 10).len()
+        );
     }
 
     #[test]

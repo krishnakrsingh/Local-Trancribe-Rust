@@ -302,18 +302,27 @@ pub fn interleave(left: &[f32], right: &[f32], channels: u16) -> Vec<f32> {
 /// Encode mono or interleaved `samples` (in `[-1, 1]`) as a PCM S16 WAV.
 pub fn encode_wav_s16(samples: &[f32], sample_rate: u32, channels: u16) -> Vec<u8> {
     let frames = samples.len() / channels.max(1) as usize;
-    let data_bytes = (frames * channels as usize * 2) as u32;
-    let mut out = Vec::with_capacity(44 + data_bytes as usize);
+    let data = &samples[..frames * channels as usize];
+    // The declared rate is absurd on purpose in the adversarial cases (u32::MAX),
+    // and this function is how those cases reach a stage at all, so the header
+    // arithmetic saturates rather than overflowing. A wrapped byte rate would be
+    // worse than a panic: it would look plausible to a decoder, and the one
+    // thing this harness must not do is hand a stage a quietly wrong file.
+    let byte_rate = sample_rate
+        .saturating_mul(u32::from(channels))
+        .saturating_mul(2);
+    let data_bytes = u32::try_from(data.len() * 2).unwrap_or(u32::MAX);
+    let mut out = Vec::with_capacity(44 + data.len() * 2);
     out.extend_from_slice(b"RIFF");
-    out.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+    out.extend_from_slice(&36u32.saturating_add(data_bytes).to_le_bytes());
     out.extend_from_slice(b"WAVE");
     out.extend_from_slice(b"fmt ");
     out.extend_from_slice(&16u32.to_le_bytes());
     out.extend_from_slice(&1u16.to_le_bytes());
     out.extend_from_slice(&channels.to_le_bytes());
     out.extend_from_slice(&sample_rate.to_le_bytes());
-    out.extend_from_slice(&(sample_rate * u32::from(channels) * 2).to_le_bytes());
-    out.extend_from_slice(&(channels * 2).to_le_bytes());
+    out.extend_from_slice(&byte_rate.to_le_bytes());
+    out.extend_from_slice(&(channels.saturating_mul(2)).to_le_bytes());
     out.extend_from_slice(&16u16.to_le_bytes());
     out.extend_from_slice(b"data");
     out.extend_from_slice(&data_bytes.to_le_bytes());
@@ -327,22 +336,29 @@ pub fn encode_wav_s16(samples: &[f32], sample_rate: u32, channels: u16) -> Vec<u
 /// Encode mono `samples` as IEEE-float WAV (format tag 3).
 pub fn encode_wav_f32(samples: &[f32], sample_rate: u32, channels: u16) -> Vec<u8> {
     let frames = samples.len() / channels.max(1) as usize;
-    let data_bytes = (frames * channels as usize * 4) as u32;
-    let mut out = Vec::with_capacity(44 + data_bytes as usize);
+    let data = &samples[..frames * channels as usize];
+    // Saturating for the same reason as `encode_wav_s16`: an absurd declared
+    // rate must reach the decoder as an absurd header, not as a panic here and
+    // not as a wrapped value that looks plausible.
+    let byte_rate = sample_rate
+        .saturating_mul(u32::from(channels))
+        .saturating_mul(4);
+    let data_bytes = u32::try_from(data.len() * 4).unwrap_or(u32::MAX);
+    let mut out = Vec::with_capacity(44 + data.len() * 4);
     out.extend_from_slice(b"RIFF");
-    out.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+    out.extend_from_slice(&36u32.saturating_add(data_bytes).to_le_bytes());
     out.extend_from_slice(b"WAVE");
     out.extend_from_slice(b"fmt ");
     out.extend_from_slice(&16u32.to_le_bytes());
     out.extend_from_slice(&3u16.to_le_bytes());
     out.extend_from_slice(&channels.to_le_bytes());
     out.extend_from_slice(&sample_rate.to_le_bytes());
-    out.extend_from_slice(&(sample_rate * u32::from(channels) * 4).to_le_bytes());
-    out.extend_from_slice(&(channels * 4).to_le_bytes());
+    out.extend_from_slice(&byte_rate.to_le_bytes());
+    out.extend_from_slice(&(channels.saturating_mul(4)).to_le_bytes());
     out.extend_from_slice(&32u16.to_le_bytes());
     out.extend_from_slice(b"data");
     out.extend_from_slice(&data_bytes.to_le_bytes());
-    for &s in &samples[..frames * channels as usize] {
+    for &s in data {
         out.extend_from_slice(&s.to_le_bytes());
     }
     out

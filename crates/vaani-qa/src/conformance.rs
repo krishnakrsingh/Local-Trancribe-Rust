@@ -54,6 +54,7 @@
 //! A conformance suite that reports 30/30 for a stage where 9 checks quietly
 //! did not run is worse than one that reports 21/21 and 9 not applicable.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -1985,7 +1986,7 @@ impl ConformanceStage for MediaStage {
         cancel: &CancelToken,
         progress: &ProgressSink,
     ) -> Result<StageOutput> {
-        let path = write_work_wav(audio)?;
+        let path = cached_work_wav(audio)?;
         self.run_path(&path, cancel, progress)
             .unwrap_or_else(|| Err(vaani_core::err::internal().with_cause("no path interface")))
     }
@@ -2070,6 +2071,40 @@ fn write_work_wav(audio: &AudioBuffer) -> Result<PathBuf> {
     // The TempDir is dropped here, which deletes the file. Deliberately leaked
     // instead: the caller opens the path after this returns.
     std::mem::forget(dir);
+    Ok(path)
+}
+
+/// Identifies a materialised work file: sample count, rate, channel count.
+type WorkFileKey = (usize, u32, u16);
+
+/// The same, but written at most once per distinct input shape.
+///
+/// A `Path`-arity stage is handed a *file*, and producing that file is the
+/// harness's job rather than the stage's. Encoding 25 minutes of audio and
+/// writing 48 MB on each of the seven runs in [`assert_conforms`] cost roughly
+/// 3.5 s per run in a debug build, and that cost was charged to the stage: the
+/// cancellation check armed its timer at an eighth of a baseline that was
+/// mostly file writing, so the cancel landed *inside the write*, and the
+/// harness then measured its own encode as the stage's cancellation latency.
+/// The stage was never the slow part, but it was the thing being reported.
+///
+/// Keyed on shape, not content, because every expensive call for a path stage
+/// uses the same [`ConformanceStage::work_audio`]; the differing sample rates
+/// in the wrong-rate check are distinguished by the key. This mirrors the cache
+/// `AppStage` keeps for the same reason.
+fn cached_work_wav(audio: &AudioBuffer) -> Result<PathBuf> {
+    static CACHE: OnceLock<Mutex<HashMap<WorkFileKey, PathBuf>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key: WorkFileKey = (audio.samples.len(), audio.sample_rate, audio.channels);
+    if let Ok(seen) = cache.lock()
+        && let Some(path) = seen.get(&key)
+    {
+        return Ok(path.clone());
+    }
+    let path = write_work_wav(audio)?;
+    if let Ok(mut seen) = cache.lock() {
+        seen.insert(key, path.clone());
+    }
     Ok(path)
 }
 

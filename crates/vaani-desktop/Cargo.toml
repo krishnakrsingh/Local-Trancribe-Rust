@@ -1,0 +1,38 @@
+[package]
+name = "vaani-desktop"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "The VaaniDesk Windows desktop application: a native window over the transcription pipeline."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "VaaniDesk"
+path = "src/main.rs"
+
+[dependencies]
+vaani-core = { workspace = true }
+vaani-app = { workspace = true }
+vaani-ui = { workspace = true }
+vaani-storage = { workspace = true }
+vaani-models = { workspace = true }
+vaani-inference = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dirs = { workspace = true }
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Globalization",
+] }
+arboard = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
