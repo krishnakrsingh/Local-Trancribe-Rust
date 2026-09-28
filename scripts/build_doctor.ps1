@@ -56,7 +56,13 @@ if (-not (Get-Command $Cargo -ErrorAction SilentlyContinue)) {
     exit 2
 }
 
-$Profile = if ($Release) { '--release' } else { @() }
+# Not `$Profile`: that is PowerShell's automatic variable holding the profile
+# script path, and a script-scope assignment to it does not survive being
+# splatted from inside a function the way one would expect. Splatting a scalar
+# from inside a scriptblock also produced `error: unexpected argument '-'` for
+# cargo, so the three cargo gates reported FAIL with no visible cause. It is an
+# array and it is always splatted; that is the whole fix.
+$ProfileArgs = if ($Release) { @('--release') } else { @() }
 $Results = [System.Collections.Generic.List[object]]::new()
 
 function Add-Result {
@@ -67,25 +73,18 @@ function Add-Result {
 function Invoke-Stage {
     param(
         [string]$Stage,
-        [scriptblock]$Body,
-        [switch]$Optional
+        [string]$CargoArgs
     )
-    if ($Optional) {
-        $pre = $Body.Invoke()
-        if ($null -eq $pre) {
-            Add-Result $Stage 'SKIP' 'prerequisite not present'
-            return
-        }
-    }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $out = & $Body 2>&1 | Out-String
+    $out = & $Cargo $CargoArgs.Split(' ') 2>&1 | Out-String
+    $code = $LASTEXITCODE
     $sw.Stop()
-    if ($LASTEXITCODE -eq 0) {
+    if ($code -eq 0) {
         Add-Result $Stage 'PASS' ("{0:N1}s" -f $sw.Elapsed.TotalSeconds)
     } else {
-        Add-Result $Stage 'FAIL' 'see the tail below'
+        Add-Result $Stage 'FAIL' ("exit {0}" -f $code)
         # Print enough of the output to act on, not the whole thing: a failed
-        # `cargo test` in a workspace with 110 tests is thousands of lines.
+        # `cargo test` in a workspace with 1600 tests is thousands of lines.
         $lines = $out -split "`r?`n" | Where-Object { $_ -match 'error|warning:|panicked|FAILED|assertion' }
         $lines | Select-Object -First 25 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkYellow }
     }
@@ -121,10 +120,28 @@ if ($linkOut -match 'ok') {
 }
 
 # --- 2..5 cargo gates -----------------------------------------------------
-Invoke-Stage 'fmt' { & $Cargo fmt --all --check 2>&1 | Out-Null }
-Invoke-Stage 'check' { & $Cargo check --workspace --all-targets @Profile 2>&1 | Out-Null }
-Invoke-Stage 'clippy' { & $Cargo clippy --workspace --all-targets @Profile -- -D warnings 2>&1 | Out-Null }
-Invoke-Stage 'test' { & $Cargo test --workspace @Profile 2>&1 | Out-Null }
+# `Invoke-Stage` receives a *string*, never a scriptblock, and the command is
+# assembled with `& $Cargo $CargoArgs.Split(' ')`.
+# were tried and both reported FAIL while hiding the cause:
+#   * a scriptblock per stage, splatting a scalar `$Profile` — and `$Profile` is
+#     PowerShell's automatic profile-path variable, so the assignment did not
+#     behave as written;
+#   * an array `$ProfileArgs` splatted from inside that scriptblock, which under
+#     PowerShell 5.1 reached cargo as a bare `-` and produced
+#     `error: unexpected argument '-' found` with the output piped to Out-Null.
+# A string the caller splits, plus a real array, has neither problem. The stage
+# bodies also no longer pipe to Out-Null, because the whole point of this script
+# is to print the reason a gate failed.
+Invoke-Stage 'fmt' 'fmt --all --check'
+if ($Release) {
+    Invoke-Stage 'check' 'check --workspace --all-targets --release'
+    Invoke-Stage 'clippy' 'clippy --workspace --all-targets --release -- -D warnings'
+    Invoke-Stage 'test' 'test --workspace --release'
+} else {
+    Invoke-Stage 'check' 'check --workspace --all-targets'
+    Invoke-Stage 'clippy' 'clippy --workspace --all-targets -- -D warnings'
+    Invoke-Stage 'test' 'test --workspace'
+}
 
 if ($Quick) {
     if ($Json) { $Results | ConvertTo-Json -Depth 3 }
@@ -138,7 +155,7 @@ if ($Quick) {
 # lacks it. None of them is optional in the sense of being allowed to pass
 # silently: SKIP names the command that would satisfy it.
 $runtimeTest = {
-    & $Cargo test -p vaani-inference --test runtime_smoke @Profile -- --nocapture 2>&1 | Out-String
+    & $Cargo test -p vaani-inference --test runtime_smoke @ProfileArgs -- --nocapture 2>&1 | Out-String
 }
 $out = & $runtimeTest
 if ($out -match 'NOT FOUND' -or $out -match 'not found at') {
@@ -168,7 +185,7 @@ if (-not $haveModel) {
         Add-Result 'golden' 'SKIP' 'run scripts\make_golden.py --src SraVaani-1.0 --out tests\fixtures --decode-audio <wav>'
     } else {
         $env:VAANI_GOLDEN_RAW = (Join-Path $Root 'scratch\golden_clip.f32')
-        $goldenOut = (& $Cargo test -p vaani-asr @Profile --test frontend_parity --test sravaani_transcribe -- --nocapture --test-threads=1 2>&1 | Out-String)
+        $goldenOut = (& $Cargo test -p vaani-asr @ProfileArgs --test frontend_parity --test sravaani_transcribe -- --nocapture --test-threads=1 2>&1 | Out-String)
         if ($goldenOut -match 'test result: FAILED') {
             Add-Result 'golden' 'FAIL' 'front-end or decode parity failed'
             ($goldenOut -split "`r?`n" | Where-Object { $_ -match 'panicked|differs|assertion|WER|EXACT' } |
