@@ -23,6 +23,13 @@
 //!
 //! * Times are milliseconds from the start of the **source media**, never from
 //!   a chunk. Rebasing happens in exactly one place: `Transcript::push_chunk`.
+//! * A [`Time`] is a **position**; a [`MediaLength`] is an **amount**; a
+//!   [`MediaWindow`] is the media's **extent**. The three are different types
+//!   and do not compare with each other, because confusing a position with an
+//!   amount has already produced two real bugs in two different crates. The
+//!   full rules are `docs/architecture/TIMESTAMP_CONTRACT.md`.
+//! * Clamping a time to the media goes through a `MediaWindow`. There is no
+//!   other door, and no downstream workaround type.
 //! * `Segment` text is *derived* from its words, never stored, so an edit can
 //!   never leave two disagreeing copies of the same string.
 //! * A missing speaker is a normal state, not an error. ASR-only mode is a
@@ -46,7 +53,9 @@ pub use job::{CancelToken, JobPhase, Progress, ProgressKind};
 pub use media::{
     AudioBuffer, AudioStreamInfo, DEFAULT_ESTIMATE_RTF, Language, MediaInfo, VideoStreamInfo,
 };
-pub use transcript::{EngineStamp, Segment, Speaker, Time, Transcript, TranscriptMode, Word};
+pub use transcript::{
+    EngineStamp, MediaLength, MediaWindow, Segment, Speaker, Time, Transcript, TranscriptMode, Word,
+};
 
 /// Product version. Kept in `core` so every crate, the CLI, the database and
 /// the exported JSON agree without any of them hard-coding it.
