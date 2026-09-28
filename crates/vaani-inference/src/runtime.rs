@@ -123,8 +123,7 @@ impl RuntimeLocation {
             .unwrap_or_else(|| PathBuf::from("."));
 
         if let Some(dir) = std::env::var_os("VAANI_RUNTIME_DIR") {
-            let d = PathBuf::from(dir);
-            return Self::at(d.clone(), vec![d], false);
+            return Self::from_env_dir(Path::new(&dir));
         }
 
         let portable = exe_dir.join("runtime");
@@ -161,6 +160,16 @@ impl RuntimeLocation {
             provider_dirs,
             portable_layout,
         }
+    }
+
+    /// The `VAANI_RUNTIME_DIR` override as a location: `ort_dll` is the DLL
+    /// *inside* the directory, not the directory itself.
+    ///
+    /// Exposed as a function rather than inline so it is testable without
+    /// mutating process-global environment state, which no two tests could do
+    /// safely in parallel.
+    fn from_env_dir(dir: &Path) -> Self {
+        Self::at(dir.join(ORT_DLL), vec![dir.to_path_buf()], false)
     }
 
     /// Whether the core runtime DLL was found.
@@ -460,5 +469,30 @@ mod tests {
         let m = loc.missing();
         assert!(m.contains(&ORT_DLL.to_string()));
         assert!(m.contains(&ORT_CUDA_DLL.to_string()));
+    }
+
+    /// Regression test for the override that reported a working runtime as
+    /// missing: `at` takes the DLL path, and the old code handed it the bare
+    /// directory, so `is_present()` did `is_file()` on a folder and said no.
+    /// The first assertion is the one that fails on the old code.
+    #[test]
+    fn the_env_override_points_at_the_dll_inside_the_directory() {
+        let dir = PathBuf::from("some/runtime/dir");
+        let loc = RuntimeLocation::from_env_dir(&dir);
+        assert_eq!(loc.ort_dll, dir.join(ORT_DLL));
+        assert_eq!(loc.provider_dirs, vec![dir]);
+    }
+
+    #[test]
+    fn the_env_override_finds_a_runtime_that_is_really_there() {
+        // A real directory holding a file with the right name must read as
+        // present. This is the end-to-end shape of "the user set the variable
+        // correctly and the app still said the runtime was missing".
+        let temp = tempfile::tempdir().expect("a temp dir");
+        std::fs::write(temp.path().join(ORT_DLL), b"not a real dll").expect("a fixture file");
+        let loc = RuntimeLocation::from_env_dir(temp.path());
+        assert!(loc.is_present());
+        assert!(loc.missing().contains(&ORT_CUDA_DLL.to_string()));
+        assert!(!loc.missing().contains(&ORT_DLL.to_string()));
     }
 }

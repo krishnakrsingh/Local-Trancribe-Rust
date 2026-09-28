@@ -83,17 +83,30 @@ impl RuntimeReport {
         // display adapter here would print the integrated GPU on a hybrid
         // laptop and tell the user the wrong thing about their own machine.
         let cc = self.machine.cuda.compute_capability;
+        // A driver-visible GPU is only "available" when the CUDA execution
+        // provider DLL is actually present. Without it, ONNX Runtime falls back
+        // to the CPU EP inside the session, so claiming GPU acceleration would
+        // send the user chasing a performance problem that does not exist —
+        // measured on this machine, where the driver sees an RTX 3050 Ti but
+        // the CPU-only distribution ships no CUDA provider.
+        let cuda_ep_present = !self.missing_dlls.iter().any(|d| d == runtime::ORT_CUDA_DLL);
         match (
             self.machine.inference_adapter(),
             self.machine.preferred_adapter(),
         ) {
-            (Some(a), _) => format!(
+            (Some(a), _) if cuda_ep_present => format!(
                 "GPU acceleration available - {}, {}, driver {}, compute {}.{}",
                 a.name,
                 a.vram_display(),
                 self.machine.cuda.driver_display(),
                 cc.map(|c| c.0).unwrap_or(0),
                 cc.map(|c| c.1).unwrap_or(0),
+            ),
+            (Some(a), _) => format!(
+                "GPU present but this build is CPU-only - {} detected, driver {} - \
+                 copy the CUDA provider DLLs into runtime/ or reinstall the GPU flavour",
+                a.name,
+                self.machine.cuda.driver_display()
             ),
             (None, Some(a)) => format!(
                 "CPU fallback - {} present but CUDA is unavailable (driver {})",
@@ -140,5 +153,71 @@ mod tests {
             },
         };
         assert!(r.summary().contains("NOT FOUND"));
+    }
+
+    /// A machine with an NVIDIA adapter and a usable driver, for the summary
+    /// tests below. Mirrors what `capability::detect` reports on this box.
+    fn nvidia_machine() -> MachineCapabilities {
+        MachineCapabilities {
+            adapters: vec![GpuAdapter {
+                name: "NVIDIA GeForce RTX 3050 Ti Laptop GPU".into(),
+                dedicated_vram_bytes: 4 * 1024 * 1024 * 1024,
+                dedicated_vram_used_bytes: 0,
+                is_software: false,
+                vendor_id: 0x10DE,
+            }],
+            cuda: CudaProbe {
+                driver_version: Some(13030),
+                device_count: Some(1),
+                compute_capability: Some((8, 6)),
+                runtime_dll: None,
+                error: None,
+            },
+            logical_cpus: 16,
+            physical_cpus: Some(8),
+            total_ram_bytes: 16 * 1024 * 1024 * 1024,
+            available_ram_bytes: 8 * 1024 * 1024 * 1024,
+            usable_cpus: 16,
+        }
+    }
+
+    /// Regression test for the summary that claimed GPU acceleration on a
+    /// CPU-only distribution. The driver sees the card, and `missing_dlls`
+    /// correctly contains the CUDA provider DLL, but the old code never
+    /// consulted it. The first assertion is the one that fails on the old code.
+    #[test]
+    fn summary_does_not_claim_gpu_acceleration_without_the_cuda_provider() {
+        let r = RuntimeReport {
+            ort_dll: "runtime/onnxruntime.dll".into(),
+            runtime_present: true,
+            missing_dlls: vec![runtime::ORT_CUDA_DLL.into()],
+            portable_layout: true,
+            machine: nvidia_machine(),
+        };
+        let s = r.summary();
+        assert!(
+            !s.contains("GPU acceleration available"),
+            "a CPU-only install must not claim GPU acceleration: {s}"
+        );
+        assert!(
+            s.contains("CPU-only"),
+            "the summary must say why the GPU is unused: {s}"
+        );
+    }
+
+    #[test]
+    fn summary_claims_gpu_acceleration_when_the_cuda_provider_is_present() {
+        let r = RuntimeReport {
+            ort_dll: "runtime/onnxruntime.dll".into(),
+            runtime_present: true,
+            missing_dlls: vec![],
+            portable_layout: true,
+            machine: nvidia_machine(),
+        };
+        let s = r.summary();
+        assert!(
+            s.contains("GPU acceleration available"),
+            "a complete GPU install must say so: {s}"
+        );
     }
 }
