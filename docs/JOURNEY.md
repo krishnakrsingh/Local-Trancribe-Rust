@@ -200,12 +200,80 @@ That last one is the general lesson, and it is why the gate runs release.
 
 ---
 
+## Phase 6 — the product gaps, closed
+
+Two parallel agents, working against the merged tree, fixed the two largest
+things the end-to-end run exposed and then went looking for the rest.
+
+**A11 built the grouping step.** The policy is worth stating in plain terms,
+because it is a product decision rather than an implementation detail: start a
+new segment when the speaker changes, when the segment would pass 84 characters
+(two lines of 42, the caption budget), when a word ends more than 12 s after the
+segment's first word, or after a long enough silence. One rule is deliberately
+*not* a break: if a length cap would fire within three words of a pause, the
+break waits for the natural boundary, because a cap firing one word before a
+pause manufactures a one-word segment — the exact thing this crate exists to
+remove.
+
+The measurement contradicted the obvious assumption. 1,889 of 1,911 inter-word
+gaps are **exactly zero**, because the ASR adapter gives each word the frame
+immediately after the previous one, so the recogniser reports no inter-word
+silence at all. The pause threshold is therefore nearly inert here and fired 6
+times out of 226 breaks; the speaker turn carries 83%. That is not a reason to
+remove it — an engine that reports true silence would need it — but it is the
+reason the default is documented as a *plateau* (a 15× range of thresholds
+moves the segment count by 3) rather than a tuned value. Reading a plateau as a
+peak would have been the mistake.
+
+A11 also found a real bug in its own first version: `embed_windows` read the
+wrong audio for every window after the first, because a missing `lo` meant every
+turn in the file was a copy of turn zero. Invisible in a speaker count, visible
+as a pitch dimension reporting 131 Hz on every window of a file whose second
+voice renders at 217 Hz.
+
+**A12 shipped the offline bundle.** Discovery now checks `<app>/models/` first,
+the ~887 MiB of MIT weights ship with the installer, and a user on a clean
+machine with no network and no token transcribes. Verified for real, not
+simulated: the distribution was extracted outside every checkout with
+`LOCALAPPDATA` redirected, every `VAANI_*` variable cleared, Python removed from
+`PATH`, and the HTTP proxies pointed at a closed port. The decision to ship
+**CPU-only by default** is the interesting one — 1.25 GiB of the difference is
+NVIDIA redistributables, and NVIDIA's SDK agreement §2.5 makes bundling them in
+an MIT product a question for counsel rather than a build-script detail. GPU
+remains one documented copy of files.
+
+**Phase 7 fixed what the agents were forbidden to touch.** `vaani-core` and
+`vaani-inference` are architect-owned, so six agents reported defects in them
+and none could act. Those are the `VAANI_RUNTIME_DIR` bug, the `doctor` summary
+that claimed GPU acceleration on a CPU-only install, three missing error codes,
+the missing media clamp, and the build doctor itself reporting three false
+failures while discarding the reason.
+
+The build doctor is the one worth dwelling on. It had been reporting
+`check`, `clippy` and `test` as FAIL while the underlying cargo commands were
+green, because `Invoke-Stage` took a scriptblock whose body piped to
+`Out-Null` — discarding the very output that would have explained the failure.
+Underneath that were two PowerShell problems: `$Profile` collides with the
+automatic profile-path variable, and splatting an array from inside that
+scriptblock reached cargo as a bare `-`. A gate that lies is worse than no gate,
+because it trains everyone to ignore it. It now prints its own failure reason.
+
+---
+
 ## Where it stands
 
 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -D warnings`
-and `cargo test --workspace` are all clean. Every agent's claims above were
-re-verified by running them, not taken on trust — which is how the A1
-cancellation tests and the three `vaani-app` failures were caught.
+and `cargo test --workspace` are all clean, and `scripts/build_doctor.ps1`
+reports all nine stages healthy. Every agent's claims above were re-verified by
+running them, not taken on trust — which is how the A1 cancellation tests, the
+three `vaani-app` failures, the golden digest's line-ending fragility and the
+doctor's own three false failures were caught.
+
+**1,602 tests pass across 91 test binaries**, 0 failures.
+
+The ASR foundation has not moved through any of it: 202/202 token IDs, 108/108
+word timings at 0.0 ms worst deviation, exact text, on the real 40-second
+reference clip.
 
 ---
 
@@ -279,51 +347,75 @@ Cancellation takes 7 ms to take effect. Those are now asserts in
 
 Ordered by how much it matters to shipping, not by convenience.
 
-1. **Nothing groups words into segments.** The single largest gap in the
-   project, found only by the first end-to-end run. Every stage does exactly
-   what it was specified to do; the specification is what is missing. A
-   transcript is a word-per-line list and an `.srt` is one cue per word.
-   Deciding the grouping policy is a product decision (by pause? by speaker
-   turn? by maximum length?) that changes every downstream contract, so it is
-   not something an acceptance pass should have invented on its own.
-2. **Diarization is a heuristic, not a model.** No embedding weights exist. It
+**Closed since the first end-to-end run** — kept here so the record shows what
+was true when, not only what is true now.
+
+- ~~Nothing groups words into segments.~~ **Closed by A11.** 1,912 one-word
+  segments became 227 readable ones; the SRT went from 1,913 single-word cues to
+  265. The policy was measured rather than guessed: 83% of the segmentation is
+  the speaker turn, and the pause threshold turned out to be a plateau rather
+  than a cliff (a 15× range of thresholds moves the segment count by 3).
+- ~~`RuntimeLocation::discover` does not join `ORT_DLL` onto
+  `VAANI_RUNTIME_DIR`.~~ **Closed.** Fixed, with a test that asserts the DLL
+  path the override must produce.
+- **`RuntimeReport::summary()` claimed GPU acceleration on a CPU-only
+  install.** Not previously listed. Fixed; the summary now distinguishes usable
+  GPU from present-but-unusable, and the self-test reports the real provider.
+- ~~`ErrorCode` is missing variants.~~ **Closed.** `Interrupted`,
+  `ResourceBusy` and `UnknownModel` all exist and are wired through, and a
+  crash-killed job is no longer recorded as "cancelled".
+- ~~A segment ends 23 ms past the end of the recording.~~
+  **Closed by `Transcript::push_chunk_within`**, used by the app and both CLI
+  transcribe paths.
+- ~~The build doctor reports FAIL.~~ **Closed.** It had been reporting three
+  false failures while discarding the reason; the cause was a PowerShell
+  splatting bug in the script itself, not in the code.
+
+**Still open:**
+
+1. **Diarization is a heuristic, not a model.** No embedding weights exist. It
    is usable and honestly bounded, and it is the weakest link in the pipeline.
-   A4 has named the exact operating region.
-3. **`RuntimeLocation::discover` does not join `ORT_DLL` onto
-   `VAANI_RUNTIME_DIR`**, so the one documented way to point the app at a
-   runtime makes that runtime report as missing. `vaani-inference` is frozen.
-4. **No SRT or VTT parser has validated the export.** A6 wrote reference
+   A4 has named the exact operating region, and the first real run confirmed it:
+   2 speakers for a 14-minute multi-party meeting is very likely an
+   under-count. **This is now the single largest quality risk in the output.**
+   The grouping policy leans on speaker turns (83% of breaks), so diarization
+   errors now propagate into the transcript's structure, not just its labels.
+2. **No SRT or VTT parser has validated the export.** A6 wrote reference
    parsers implementing the published rules; no third-party parser and no real
    player has checked the bytes. Phase 5 checked them with
    `vaani_export::verify` on the real transcript: both parse, both pass the
    two-line and no-overlap rules, and the cue count matches. Still no real
    player. On the release checklist: open one `.srt` and one `.vtt`.
-5. **Downloads are unverified against the network.** There is no network on the
+3. **Downloads are unverified against the network.** There is no network on the
    build machine. A7 tested the entire transfer path over real TCP against a
    local HTTP/1.1 server, including `Range`, resume, redirect-to-CDN, auth and
    truncation — but the actual Hugging Face endpoint and its xet bridge have
    never been contacted. A7 names this as the most likely first real-world
-   failure.
-6. **`ErrorCode` is missing two variants** that three agents had to work around:
-   `Interrupted` (a job killed by a crash currently masquerades as `cancelled`)
-   and `ResourceBusy` (a lost install race and a locked model both surface as a
-   storage error). A third is now visible: there is no `UnknownModel`, so a
-   user who mistypes `--model` gets `model_unavailable`, whose title is close
-   but not right.
-7. **100% offline, pre-bundled models (architect mandate).** SraVaani is
-   MIT-licensed, so the production weights — `encoder.fp16.onnx`,
-   `decoder_joint.onnx`, `tokenizer.model`, the filterbank matrices and the
-   configs, ~930 MB — are bundled permanently under `models/sravaani/`. No
-   first-launch token prompt, no download gate on the baseline engine, and
-   discovery checks `<app>/models/` first. This supersedes the earlier
-   `gated-token` constraint: the Hugging Face gate no longer stands between a
-   user and a working transcript.
-8. **Paint performance is unmeasured.** A5 measured all the state work; nobody
+   failure. The offline bundle is unaffected: it ships in the installer and was
+   verified on a clean machine with no network at all.
+4. **The SraVaani licence needs written confirmation before release.** A12
+   verified the grant three ways and MIT permits redistributing the weights, but
+   the upstream repository publishes no LICENSE file and states no copyright
+   holder in machine-readable form. The distribution ships the MIT text with a
+   provenance note that says so plainly. Get written confirmation before any
+   public or commercial release.
+5. **The GPU distribution is not bundled by default, deliberately.** NVIDIA's
+   SDK agreement §2.5 is a question for counsel, not a build script, so the
+   default distribution is CPU-only (925 MiB, 2.5–4× slower) and the GPU
+   flavour is a documented copy of DLLs. Decide this before release.
+6. **Paint performance is unmeasured.** A5 measured all the state work; nobody
    has measured frame time with a real transcript on screen.
-9. **`push_chunk` has no upper clamp.** A decoded frame can land past the end of
-   the recording — 23 ms did, on the real clip. `vaani-core` is frozen.
-
-## The rule that keeps producing the bugs
+7. **`Transcript::duration` is a length while segment times are absolute.**
+   Nothing in the type distinguishes them, and it has already caused two real
+   bugs in two different crates. A11 works around it with `MediaBounds`; the
+   contract itself still permits the mistake. This is the highest-value
+   remaining change to `vaani-core`, and it is a change to ten crates' call
+   sites rather than a bug fix.
+8. **The VAD calls 86.5% of this meeting speech.** Plausible for a recorded
+   meeting, high enough to be worth a look.
+9. **The CLI has no way to cancel a job.** Cancellation is instant once
+   requested (5.5 ms) and the desktop app has a real cancel button, but the
+   shipped CLI has no trigger for it.
 
 Every defect in this project was a thing that was *plausible* and not *checked*:
 a power spectrum missing a factor of two, a window index missing an offset, a
