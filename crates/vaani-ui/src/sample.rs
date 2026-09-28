@@ -111,7 +111,11 @@ pub fn sample_transcript(word_count: usize, speakers: usize) -> Transcript {
         transcript.segments.push(segment);
     }
 
-    transcript.duration = Some(Time::from_millis(segment_count as i64 * per_segment_ms));
+    // The *length*: the sample is a whole recording starting at zero, so its
+    // extent and its length are the same figure.
+    transcript.duration = Some(vaani_core::MediaLength::from_millis(
+        segment_count as i64 * per_segment_ms,
+    ));
     transcript.recompute_speaker_shares();
     transcript
 }
@@ -226,8 +230,15 @@ mod tests {
             assert!(segment.end >= segment.start, "inverted segment");
             last = segment.start.as_millis();
         }
-        let duration = t.duration.unwrap();
-        assert!(t.segments.last().unwrap().end <= duration);
+        // `duration` is a **length** and a segment's `end` is a **position**.
+        // They were compared directly here before, which is only correct for a
+        // sample that starts at zero. The sample does, so the assertion is
+        // unchanged in meaning — but it is now stated through the window, which
+        // is the expression that is correct in general.
+        let window =
+            vaani_core::MediaWindow::of_length(t.duration.expect("the sample declares one"));
+        assert_eq!(window.start(), Time::ZERO);
+        assert!(t.segments.last().unwrap().end <= window.end());
     }
 
     #[test]

@@ -68,6 +68,7 @@
 use serde::{Deserialize, Serialize};
 use vaani_core::Time;
 use vaani_core::pipeline::{SpeechSegment, SpeechTimeline};
+use vaani_core::transcript::MediaWindow;
 
 use crate::config::ChunkPolicy;
 
@@ -217,29 +218,63 @@ impl Chunker {
         &self.policy
     }
 
-    /// A lazy iterator over the planned chunks.
+    /// A lazy iterator over the planned chunks, bounded by the media **end**.
     ///
-    /// `plan` is `self.iter(..).collect()`. The boundaries are computed once,
-    /// inside the call, and then handed out one at a time: a caller that wants
-    /// to stream (slice, transcribe, drop) can `take(n)` without materialising
-    /// a `Vec`, and the iterator carries no audio at any point.
+    /// `media_end` is an **absolute position** — where the recording stops, not
+    /// how long it is. This is the single place in the product where that
+    /// distinction has already cost a defect: `AsrStage` used to pass
+    /// `audio.duration()`, which is a *length*, and for a buffer with a non-zero
+    /// `start_time` the two differ by exactly that origin, so the plan came
+    /// back with chunks before the recording started.
+    ///
+    /// Use [`iter_within`](Self::iter_within) with a `MediaWindow` wherever the
+    /// extent is available; it cannot be given a length by mistake. The
+    /// parameter was renamed from `total` to `media_end` for the same reason:
+    /// the old name invited the mistake.
     #[must_use]
-    pub fn iter(&self, timeline: &SpeechTimeline, total: Time) -> ChunkIter {
+    pub fn iter(&self, timeline: &SpeechTimeline, media_end: Time) -> ChunkIter {
+        self.iter_within(timeline, &MediaWindow::new(Time::ZERO, media_end))
+    }
+
+    /// [`iter`](Self::iter), bounded by a whole [`MediaWindow`].
+    ///
+    /// The window carries the media's origin as well as its end, so the plan is
+    /// correct for a slice, a resumed job or any buffer whose `start_time` is
+    /// not zero — and there is no way to pass a bare length here.
+    #[must_use]
+    pub fn iter_within(&self, timeline: &SpeechTimeline, window: &MediaWindow) -> ChunkIter {
         let merged = merge_segments(&timeline.segments, self.policy.merge_gap_ms);
         let capped = split_at_cap(&merged, self.policy.max_ms);
-        let total_ms = total.as_millis().max(capped.last().map_or(0, |s| s.end));
+        // The origin is the floor for a plan: a buffer that starts at +5 minutes
+        // must not produce a chunk that begins at zero.
+        let total_ms = window
+            .end()
+            .as_millis()
+            .max(capped.last().map_or(window.start().as_millis(), |s| s.end));
         let raw = self.boundaries(&capped, total_ms);
-        let chunks = self.pad_and_coalesce(raw, total_ms);
+        let chunks = self.pad_and_coalesce(raw, total_ms, window.start().as_millis());
         ChunkIter {
             chunks: chunks.into_iter(),
         }
     }
 
-    /// Every chunk, sorted, non-overlapping unless `overlap_ms > 0`, and
-    /// within `[0, total]`.
+    /// Every chunk, sorted, non-overlapping unless `overlap_ms > 0`, within the
+    /// media.
+    ///
+    /// `media_end` is an **absolute position**; see [`iter`](Self::iter).
     #[must_use]
-    pub fn plan(&self, timeline: &SpeechTimeline, total: Time) -> Vec<Chunk> {
-        self.iter(timeline, total).collect()
+    pub fn plan(&self, timeline: &SpeechTimeline, media_end: Time) -> Vec<Chunk> {
+        self.iter(timeline, media_end).collect()
+    }
+
+    /// [`plan`](Self::plan), bounded by a whole [`MediaWindow`].
+    ///
+    /// The entry point a pipeline should use. `MediaWindow::of_buffer(&audio)`
+    /// is the one expression of the media's extent that cannot be confused with
+    /// its length.
+    #[must_use]
+    pub fn plan_within(&self, timeline: &SpeechTimeline, window: &MediaWindow) -> Vec<Chunk> {
+        self.iter_within(timeline, window).collect()
     }
 
     /// The greedy core: capped spans in, un-padded chunk ranges out.
@@ -332,13 +367,22 @@ impl Chunker {
     }
 
     /// Pad, clip against the neighbour and the buffer, then enforce the floor.
-    fn pad_and_coalesce(&self, raw: Vec<Span>, total_ms: i64) -> Vec<Chunk> {
+    ///
+    /// `origin_ms` is where the media **starts** in absolute terms. It used to
+    /// be a hard-coded `.max(0)`, which is correct only while the recording
+    /// begins at zero: for a buffer at +5 minutes the leading pad was clamped
+    /// to 0 and the first chunk came back before the origin. That is the
+    /// `times.no_time_precedes_the_origin` failure the conformance harness
+    /// reported against the ASR stage.
+    fn pad_and_coalesce(&self, raw: Vec<Span>, total_ms: i64, origin_ms: i64) -> Vec<Chunk> {
         let pad = self.policy.pad_ms;
         let overlap = self.policy.overlap_ms;
         let mut chunks: Vec<Chunk> = Vec::with_capacity(raw.len());
-        let mut cursor = 0i64;
+        let mut cursor = origin_ms;
         for s in raw {
-            let start = (s.start - pad).max(0).max(cursor.saturating_sub(overlap));
+            let start = (s.start - pad)
+                .max(origin_ms)
+                .max(cursor.saturating_sub(overlap));
             let end = (s.end + pad).min(total_ms).max(start);
             if end <= start {
                 continue;
@@ -352,20 +396,47 @@ impl Chunker {
         coalesce_short(chunks, &self.policy)
     }
 
-    /// Like [`Self::plan`], but also returns the un-padded, un-coalesced spans.
+    /// Like [`plan`](Self::plan), but also returns the un-padded, un-coalesced
+    /// spans.
     ///
     /// Exists because the cap invariant is the one whose violation is a *memory*
     /// bug rather than a quality bug, and reproducing it needs the intermediate
     /// stage: the 13.9-minute reference recording produced a 61,300 ms chunk
     /// against a 60,000 ms cap that no hand-written case and no 2,000-case
     /// randomised sweep reproduced.
+    ///
+    /// `media_end` is an **absolute position**; see [`iter`](Self::iter).
     #[must_use]
-    pub fn plan_with_raw(&self, timeline: &SpeechTimeline, total: Time) -> (Vec<Span>, Vec<Chunk>) {
+    pub fn plan_with_raw(
+        &self,
+        timeline: &SpeechTimeline,
+        media_end: Time,
+    ) -> (Vec<Span>, Vec<Chunk>) {
         let merged = merge_segments(&timeline.segments, self.policy.merge_gap_ms);
         let capped = split_at_cap(&merged, self.policy.max_ms);
-        let total_ms = total.as_millis().max(capped.last().map_or(0, |s| s.end));
+        let total_ms = media_end
+            .as_millis()
+            .max(capped.last().map_or(0, |s| s.end));
         let raw = self.boundaries(&capped, total_ms);
-        let chunks = self.pad_and_coalesce(raw.clone(), total_ms);
+        let chunks = self.pad_and_coalesce(raw.clone(), total_ms, Time::ZERO.as_millis());
+        (raw, chunks)
+    }
+
+    /// [`plan_with_raw`](Self::plan_with_raw), bounded by a `MediaWindow`.
+    #[must_use]
+    pub fn plan_with_raw_within(
+        &self,
+        timeline: &SpeechTimeline,
+        window: &MediaWindow,
+    ) -> (Vec<Span>, Vec<Chunk>) {
+        let merged = merge_segments(&timeline.segments, self.policy.merge_gap_ms);
+        let capped = split_at_cap(&merged, self.policy.max_ms);
+        let total_ms = window
+            .end()
+            .as_millis()
+            .max(capped.last().map_or(window.start().as_millis(), |s| s.end));
+        let raw = self.boundaries(&capped, total_ms);
+        let chunks = self.pad_and_coalesce(raw.clone(), total_ms, window.start().as_millis());
         (raw, chunks)
     }
 }
@@ -1082,5 +1153,86 @@ mod tests {
                 "segment {s:?} is not covered to its end ({b}); the last chunk touching it ends at {at}"
             );
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // The historical bug: a length where an absolute end was required
+    // ---------------------------------------------------------------------
+
+    /// A2's known failure, `times.no_time_precedes_the_origin`.
+    ///
+    /// `AsrStage` called `plan(&speech, audio.duration())`. `duration()` is a
+    /// **length**; the parameter is an **absolute end**; the `SpeechTimeline`
+    /// holds absolute times. For a buffer that does not start at zero they
+    /// disagree by exactly the origin, and the plan came back with the first
+    /// chunk beginning at 0 — before the recording had started.
+    ///
+    /// The fixture is the conformance harness's: 90 seconds of speech in a
+    /// buffer that begins at **+5 minutes**.
+    #[test]
+    fn a_buffer_at_a_nonzero_origin_plans_inside_the_media() {
+        let origin = 300_000;
+        let speech = timeline(vec![seg(origin, origin + 89_600)]);
+        let buffer = vaani_core::media::AudioBuffer::mono(
+            vec![0.0; 16_000 * 90],
+            16_000,
+            Time::from_millis(origin),
+        );
+        let window = MediaWindow::of_buffer(&buffer);
+        assert_eq!(window.start(), Time::from_millis(origin));
+        assert_eq!(window.end(), Time::from_millis(origin + 90_000));
+
+        let chunks = Chunker::new(policy()).plan_within(&speech, &window);
+        assert!(!chunks.is_empty());
+        for c in &chunks {
+            assert!(
+                c.start.as_millis() >= origin,
+                "chunk {c:?} begins before the media, which starts at {origin} ms"
+            );
+            assert!(
+                c.end.as_millis() <= window.end().as_millis(),
+                "chunk {c:?} runs past the end of the media"
+            );
+        }
+        // Nothing is lost: the speech span is still wholly covered.
+        assert_segments_fully_covered(&speech, &chunks);
+    }
+
+    /// The two arguments are not interchangeable, and the difference is exactly
+    /// the origin. Stated as a number so a reader does not have to derive it.
+    #[test]
+    fn a_buffer_length_is_not_the_media_end() {
+        let origin = 300_000;
+        let buffer = vaani_core::media::AudioBuffer::mono(
+            vec![0.0; 16_000 * 90],
+            16_000,
+            Time::from_millis(origin),
+        );
+        let length = buffer.length();
+        let end = MediaWindow::of_buffer(&buffer).end();
+        assert_eq!(length.as_millis(), 90_000);
+        assert_eq!(end, Time::from_millis(390_000));
+        assert_ne!(Time::from_millis(length.as_millis()), end);
+    }
+
+    /// A zero-origin buffer plans exactly as it always did.
+    ///
+    /// The origin change in `pad_and_coalesce` replaces a hard-coded `.max(0)`
+    /// with the window's start, which is `0` for a whole file. Every other
+    /// chunker test in this module is a zero-origin case, so this one states the
+    /// invariant explicitly rather than relying on the rest of the suite to
+    /// notice.
+    #[test]
+    fn a_zero_origin_buffer_is_unchanged_by_the_window() {
+        let speech = timeline(vec![seg(0, 90_000)]);
+        let buffer =
+            vaani_core::media::AudioBuffer::mono(vec![0.0; 16_000 * 90], 16_000, Time::ZERO);
+        let window = MediaWindow::of_buffer(&buffer);
+        assert_eq!(window.start(), Time::ZERO);
+        assert_eq!(
+            Chunker::new(policy()).plan_within(&speech, &window),
+            Chunker::new(policy()).plan(&speech, buffer.duration()),
+            "for a media that starts at zero, the window and the bare end agree exactly"
+        );
     }
 }

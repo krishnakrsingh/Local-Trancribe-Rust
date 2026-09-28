@@ -278,7 +278,7 @@ mod tests {
                 t.segments.push(seg);
                 at += 420;
             }
-            t.duration = Some(Time(at));
+            t.duration = Some(vaani_core::MediaLength::from_millis(at));
             t
         };
         assert_eq!(

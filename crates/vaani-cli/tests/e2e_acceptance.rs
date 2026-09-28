@@ -86,8 +86,13 @@ fn the_real_meeting_survives_the_whole_chain() {
     let media = vaani_media::probe(&clip).expect("probe the recording");
     let audio = vaani_media::decode_to_mono16k(&clip, &cancel).expect("decode the recording");
     let media_ms = t0.elapsed().as_millis() as u64;
-    let total = audio.duration();
-    let total_ms = total.as_millis();
+    // The media's **length** and its **window**, kept apart on purpose. The
+    // length is a count of milliseconds; the window is where the media sits.
+    // This acceptance gate runs on a whole decoded file, so they coincide —
+    // which is exactly why the two must not be the same variable.
+    let length = audio.length();
+    let total_ms = length.as_millis();
+    let window = vaani_core::MediaWindow::of_buffer(&audio);
     assert!(
         total_ms > 60_000,
         "the acceptance recording should be minutes long, got {total_ms} ms"
@@ -100,7 +105,7 @@ fn the_real_meeting_survives_the_whole_chain() {
     let vad_ms = t0.elapsed().as_millis() as u64;
 
     let chunker = vaani_vad::Chunker::new(vaani_vad::ChunkPolicy::default());
-    let chunks = chunker.plan(&timeline, total);
+    let chunks = chunker.plan_within(&timeline, &window);
     assert!(!chunks.is_empty(), "the chunk plan is empty");
     for c in &chunks {
         assert!(
@@ -123,7 +128,7 @@ fn the_real_meeting_survives_the_whole_chain() {
         engine.model_name(),
         engine.model_version(),
     ));
-    transcript.duration = Some(total);
+    transcript.duration = Some(length);
 
     // The ground truth for the rebasing check: every chunk-local segment the
     // engine produced, together with the offset it *should* land at. This is
@@ -206,7 +211,8 @@ fn the_real_meeting_survives_the_whole_chain() {
     // ------------------------------------------------------------------ assert
     let words: usize = transcript.segments.iter().map(|s| s.words.len()).sum();
 
-    let (past_segments, past_worst) = word_timings_are_monotonic_and_in_bounds(&transcript, total);
+    let (past_segments, past_worst) =
+        word_timings_are_monotonic_and_in_bounds(&transcript, &window);
     chunks_are_rebased_onto_the_media_timeline(&transcript, &expected, &chunks);
     segments_land_inside_detected_speech(&transcript, &timeline);
     speaker_attribution_is_consistent(&transcript, &attribution, &diar);
@@ -232,7 +238,7 @@ fn the_real_meeting_survives_the_whole_chain() {
     println!("  vad spans            {}", timeline.segments.len());
     println!(
         "  vad speech           {:.1} % of the recording",
-        timeline.speech_ratio(total) * 100.0
+        timeline.speech_ratio(audio.duration()) * 100.0
     );
     println!("  chunks               {}", chunks.len());
     println!("  segments             {}", transcript.segments.len());
@@ -286,7 +292,7 @@ fn the_real_meeting_survives_the_whole_chain() {
     let report = serde_json::json!({
         "audio_ms": total_ms,
         "vad_spans": timeline.segments.len(),
-        "vad_speech_ratio": timeline.speech_ratio(total),
+        "vad_speech_ratio": timeline.speech_ratio(audio.duration()),
         "chunks": chunks.len(),
         "segments": transcript.segments.len(),
         "words": words,
@@ -338,14 +344,24 @@ fn the_real_meeting_survives_the_whole_chain() {
 // ---------------------------------------------------------------------------
 
 /// No word ends before it starts; nothing lands outside the media.
-fn word_timings_are_monotonic_and_in_bounds(t: &Transcript, total: Time) -> (usize, i64) {
-    let total_ms = total.as_millis();
+/// Assert monotonic, ordered, non-inverted times, all inside the media window.
+///
+/// The bound is a [`vaani_core::MediaWindow`], not a `Time`. This function used
+/// to take the media's **length** and compare it against **absolute** segment
+/// ends — correct only because this gate decodes a whole file, so origin and
+/// extent coincide. Taking the window says which of the two is meant.
+fn word_timings_are_monotonic_and_in_bounds(
+    t: &Transcript,
+    window: &vaani_core::MediaWindow,
+) -> (usize, i64) {
+    let total_ms = window.end().as_millis();
+    let origin_ms = window.start().as_millis();
     let mut word_count = 0usize;
 
     for (i, seg) in t.segments.iter().enumerate() {
         assert!(
-            seg.start.as_millis() >= 0,
-            "segment {i} starts before the media at {} ms",
+            seg.start.as_millis() >= origin_ms,
+            "segment {i} starts at {} ms, before the media's origin of {origin_ms} ms",
             seg.start.as_millis()
         );
         assert!(
@@ -365,8 +381,8 @@ fn word_timings_are_monotonic_and_in_bounds(t: &Transcript, total: Time) -> (usi
                 w.end.as_millis()
             );
             assert!(
-                w.start.as_millis() >= 0,
-                "segment {i} word {j} starts before the media at {} ms",
+                w.start.as_millis() >= origin_ms,
+                "segment {i} word {j} starts at {} ms, before the media's origin of {origin_ms} ms",
                 w.start.as_millis()
             );
             if let Some(p) = prev_end {

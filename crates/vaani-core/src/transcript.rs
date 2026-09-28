@@ -824,7 +824,11 @@ impl Transcript {
     /// zero — hence a separate method from [`inferred_length`](Self::inferred_length).
     #[must_use]
     pub fn inferred_media_end(&self) -> Time {
-        self.segments.iter().map(|s| s.end).max().unwrap_or(Time::ZERO)
+        self.segments
+            .iter()
+            .map(|s| s.end)
+            .max()
+            .unwrap_or(Time::ZERO)
     }
 
     /// Absolute start of the first segment — a **position**.
@@ -849,7 +853,8 @@ impl Transcript {
     /// bound wants [`media_window`](Self::media_window) instead.
     #[must_use]
     pub fn inferred_length(&self) -> MediaLength {
-        self.inferred_media_start().span_to(self.inferred_media_end())
+        self.inferred_media_start()
+            .span_to(self.inferred_media_end())
     }
 
     /// The media window this transcript's times must lie inside, when it is
@@ -1173,8 +1178,11 @@ mod tests {
                     Word::new("alpha", Time(0), Time(half / 2)),
                     Word::new("bravo", Time(half / 2), Time(half)),
                 ]),
-                Segment::new(Time(half), Time(300_000))
-                    .with_words(vec![Word::new("charlie", Time(half), Time(300_000))]),
+                Segment::new(Time(half), Time(300_000)).with_words(vec![Word::new(
+                    "charlie",
+                    Time(half),
+                    Time(300_000),
+                )]),
             ],
         );
 
@@ -1186,7 +1194,11 @@ mod tests {
         assert_eq!(window.length(), t.duration.unwrap());
 
         for seg in &t.segments {
-            assert!(window.contains(seg.start), "{:?} is before the window", seg.start);
+            assert!(
+                window.contains(seg.start),
+                "{:?} is before the window",
+                seg.start
+            );
             assert!(seg.end <= window.end(), "{:?} is past the window", seg.end);
             for w in &seg.words {
                 assert!(
@@ -1261,11 +1273,7 @@ mod tests {
             let local = if i == 2 { 30_020 } else { 30_000 };
             t.push_chunk_within(
                 window.start().offset_by(MediaLength::from_millis(offset)),
-                vec![seg(
-                    0,
-                    local,
-                    &[("w", 0, local)],
-                )],
+                vec![seg(0, local, &[("w", 0, local)])],
                 &window,
             );
         }
@@ -1354,10 +1362,16 @@ mod tests {
         assert_eq!(w.clamp(Time(0)), Time(300_000));
         assert_eq!(w.clamp(Time(999_999)), Time(390_000));
         assert_eq!(w.clamp(Time(350_000)), Time(350_000));
-        assert_eq!(w.clamp_span(Time(0), Time(999_999)), (Time(300_000), Time(390_000)));
+        assert_eq!(
+            w.clamp_span(Time(0), Time(999_999)),
+            (Time(300_000), Time(390_000))
+        );
         // An inverted pair collapses to the origin of the window rather than
         // inverting, which would put an end before its start.
-        assert_eq!(w.clamp_span(Time(999_999), Time(0)), (Time(390_000), Time(390_000)));
+        assert_eq!(
+            w.clamp_span(Time(999_999), Time(0)),
+            (Time(390_000), Time(390_000))
+        );
         // An inverted window is normalised, so `clamp` is total.
         let bad = MediaWindow::new(Time(390_000), Time(300_000));
         assert_eq!(bad.length(), MediaLength::ZERO);
@@ -1369,7 +1383,10 @@ mod tests {
         let mut t = Transcript::new(EngineStamp::asr("m", "1"));
         t.push_chunk(
             Time(300_000),
-            vec![seg(0, 1_000, &[("a", 0, 1_000)]), seg(1_000, 2_000, &[("b", 1_000, 2_000)])],
+            vec![
+                seg(0, 1_000, &[("a", 0, 1_000)]),
+                seg(1_000, 2_000, &[("b", 1_000, 2_000)]),
+            ],
         );
         assert_eq!(t.inferred_media_start(), Time(300_000));
         assert_eq!(t.inferred_media_end(), Time(302_000));

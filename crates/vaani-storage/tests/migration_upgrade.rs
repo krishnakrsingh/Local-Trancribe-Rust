@@ -19,7 +19,7 @@
 //! test again.
 
 use rusqlite::{Connection, params};
-use vaani_core::{EngineStamp, JobPhase, Time, Transcript};
+use vaani_core::{EngineStamp, JobPhase, Transcript};
 use vaani_storage::{JobRecord, Store, fixtures, migrations, testing::TempDir};
 
 /// Build a database at schema `version` and write one job plus one transcript
@@ -179,7 +179,7 @@ fn write_v1_transcript(conn: &Connection, job_id: &str, t: &Transcript) {
             "raw",
             "hi",
             serde_json::to_string(&t.engine).unwrap(),
-            t.duration.map(Time::as_millis),
+            t.duration.map(vaani_core::MediaLength::as_millis),
             i64::from(t.edited),
             1_700_000_000_000i64,
         ],

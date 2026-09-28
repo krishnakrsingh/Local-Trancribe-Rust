@@ -34,7 +34,7 @@
 //! claim is asserted on hundreds of inputs rather than asserted once.
 
 use vaani_core::pipeline::{DiarizationResult, SpeakerSpan};
-use vaani_core::{EngineStamp, Segment, Time, Transcript, Word};
+use vaani_core::{EngineStamp, MediaLength, Segment, Time, Transcript, Word};
 use vaani_segment::{
     GroupingPolicy, group, group_with_diarization, plan_groups, same_grouping, same_segmentation,
     word_text_contains_no_punctuation,
@@ -145,11 +145,14 @@ fn transcript(seed: u64, segments: usize) -> Transcript {
         t.segments.push(seg);
         cursor = end + rng.range(0, 2_000);
     }
-    // A declared duration most of the time, so the media-bounds clamp is
+    // A declared **length** most of the time, so the media window is
     // exercised, and `None` sometimes, so the "no clamp" path is too.
+    //
+    // A length, not an end: the generator knows how much media it wrote, not
+    // where in the world that media sits.
     t.duration = rng
         .chance(4, 5)
-        .then(|| Time::from_millis(cursor + rng.range(0, 3_000)));
+        .then(|| MediaLength::from_millis(cursor + rng.range(0, 3_000)));
     t
 }
 
@@ -157,11 +160,11 @@ fn transcript(seed: u64, segments: usize) -> Transcript {
 /// random number of speakers. Deterministic in `seed`.
 fn diarization(seed: u64, t: &Transcript) -> DiarizationResult {
     let mut rng = Rng::new(seed ^ 0x5EED);
-    let horizon = t
-        .duration
-        .map(|d| d.as_millis())
-        .unwrap_or_else(|| t.inferred_duration().as_millis())
-        .max(1);
+    // The horizon is a **position**: the last instant of the media. It used to
+    // be read straight off `Transcript::duration`, which is a length, and
+    // happened to be right only because every generated transcript starts at
+    // or near zero. `inferred_media_end` says what it is.
+    let horizon = t.inferred_media_end().as_millis().max(1);
     let speakers = 1 + rng.below(3) as usize;
     let mut spans = Vec::new();
     let mut at = 0i64;
@@ -290,9 +293,27 @@ fn assert_invariants(before: &Transcript, after: &Transcript, seed: u64, policy:
         );
         assert!(seg.start.as_millis() >= 0, "negative start ({label})");
         if let Some(d) = after.duration {
+            // `duration` is a **length**, so it cannot be the bound. The bound
+            // is the window: the transcript's own origin plus that length.
+            // The previous line of this test compared an absolute `seg.end`
+            // against the length directly, which was wrong for any transcript
+            // that does not start at zero and only passed because the generator
+            // starts at or near zero.
+            let window = after
+                .media_window()
+                .expect("a duration was declared, so a window exists");
+            assert_eq!(
+                window.length(),
+                d,
+                "the window's length is the declared one"
+            );
             assert!(
-                seg.end.as_millis() <= d.as_millis(),
+                seg.end <= window.end(),
                 "segment {i} ends past the media ({label})"
+            );
+            assert!(
+                seg.start >= window.start(),
+                "segment {i} starts before the media ({label})"
             );
         }
         ids.push(&seg.id);

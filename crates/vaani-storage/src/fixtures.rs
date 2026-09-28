@@ -18,7 +18,9 @@
 //! alone, which is the only property that makes a property test worth having:
 //! `transcript(0xC0FFEE, 250)` fails the same way tomorrow.
 
-use vaani_core::{EngineStamp, Segment, Speaker, Time, Transcript, TranscriptMode, Word};
+use vaani_core::{
+    EngineStamp, MediaLength, Segment, Speaker, Time, Transcript, TranscriptMode, Word,
+};
 
 /// A seeded SplitMix64. Small, fast, and — unlike `rand` — already in the
 /// dependency budget.
@@ -150,7 +152,9 @@ pub fn transcript(seed: u64, segments: usize) -> Transcript {
         structuring_model: rng.chance(1, 4).then(|| "qwen2.5-7b".to_string()),
     });
     t.id = format!("tr-{seed:016x}");
-    t.duration = rng.chance(4, 5).then(|| Time(rng.range(0, 3_600_000)));
+    t.duration = rng
+        .chance(4, 5)
+        .then(|| MediaLength::from_millis(rng.range(0, 3_600_000)));
     t.mode = match rng.below(3) {
         0 => TranscriptMode::Raw,
         1 => TranscriptMode::Clean,

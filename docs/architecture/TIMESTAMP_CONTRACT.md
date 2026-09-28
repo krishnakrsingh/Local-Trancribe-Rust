@@ -35,8 +35,11 @@ different crates:
    `Chunker::new(policy).plan(&speech, audio.duration())` while `speech` holds
    **absolute** times and `audio.duration()` is a **length**. For any buffer
    that does not start at zero, the chunker clamped absolute ends against a
-   relative total. It is recorded as `times.no_time_precedes_the_origin` in
-   `vaani_qa::conformance::asr_stage_known_failures`.
+   relative total and the last STFT frame's clamp did the same to the
+   accumulated transcript. It was recorded as
+   `times.no_time_precedes_the_origin` in
+   `vaani_qa::conformance::asr_stage_known_failures` and it is **now fixed and
+   the entry deleted** — see §9.
 
 Both were arithmetic that read correctly. That is the whole problem: the mistake
 is not gross, it is *readable*.
@@ -136,7 +139,7 @@ decision:
 | Constructor | Use when | Window |
 |---|---|---|
 | `MediaWindow::of_buffer(&AudioBuffer)` | **the normal case** — a pipeline holds the decoded audio | `buffer.start_time .. buffer.start_time + buffer.length()` |
-| `MediaWindow::new(start, end)` | a slice whose extent is genuinely known from elsewhere | exactly what you pass |
+| `MediaWindow::new(start, end)` | a slice whose extent is genuinely known from elsewhere | exactly what you pass, normalised so `end >= start` |
 | `MediaWindow::of_length(length)` | the media is known to start at zero — a whole file, a test fixture | `0 .. length` |
 
 `of_length` is the only constructor that assumes an origin, and it is named for
@@ -149,6 +152,12 @@ rather than written inline.
 gone. `vaani_segment::MediaWindow` is a re-export of the contract type, so
 there is exactly one such type in the workspace and it lives in the crate that
 owns the meaning.
+
+`vaani_vad::Chunker` follows the same rule. Its parameter is an **absolute
+end**, so it is named `media_end` (it was `total`, which is what invited the
+mistake) and there is a `plan_within` / `iter_within` that takes a
+`MediaWindow` and therefore cannot be handed a length at all. Both production
+pipelines use the window form.
 
 ## 6. What is legal per site
 
@@ -165,7 +174,9 @@ listed here is a bug.
 | `vaani-segment/tests/properties.rs` bounds check | **nothing** | it was comparing an absolute end to a length; it now compares against a `MediaWindow` |
 | `vaani-cli/tests/e2e_acceptance.rs` reach check | **nothing** | same; it now compares against the buffer's window |
 | `vaani-ui/sample.rs` bounds check | **nothing** | same |
-| `vaani-segment` `MediaBounds` | a window | was a workaround for the contract's gap; now the contract's own type |
+| `vaani-segment` `MediaBounds` | a window | was a workaround for the contract's gap; now the contract's own type, re-exported |
+| `vaani-vad` `Chunker::plan(timeline, media_end)` | an absolute end | the parameter is renamed from `total`; `plan_within` takes a `MediaWindow` and is what both pipelines use |
+| `vaani-qa` `synthetic_transcript` | a length in `duration`, absolute in the segments | this fixture *was* the A11 trap — a 89 600 ms length with 300 000..389 600 absolute times |
 
 ## 7. Known residual ambiguity (deliberate, not forgotten)
 
@@ -182,7 +193,11 @@ cross, and each is a compile-clean, documented hole rather than an accident.
 2. **`SpeechTimeline::speech_ratio(total: Time)`** and
    **`DiarizationResult::coverage(total: Time)`** (`vaani-core/src/pipeline.rs`).
    Both take a *length*. Both are called by `vaani-diarization`, which may not
-   be edited here. **Remaining step:** same cascade.
+   be edited here, and `pipeline.rs` is not in this track's ownership. **Both
+   are named `total` or `coverage(total)`, which is at least honest about being
+   a quantity.** **Remaining step:** change both to `MediaLength` and cascade
+   into `vaani-diarization` and `vaani-vad`, in a commit that can move those
+   crates' call sites together.
 3. **`AsrEngine::transcribe` → `AudioChunk::duration() -> Time`**
    (`vaani-asr/src/engine.rs`). `vaani-asr` is frozen and numerically validated.
    `AudioChunk` has no `start_time` at all, which is precisely why its
@@ -219,3 +234,36 @@ Three layers, in order of strength.
    second.
 3. **The regression tests** in `crates/vaani-core/src/transcript.rs`, which
    reproduce the A11 and A2 cases verbatim and assert the fixed behaviour.
+
+## 9. The A2 entry is gone
+
+`vaani_qa::conformance::asr_stage_known_failures()` now returns an empty list,
+and the entry it carried has been deleted. The registry is policed by
+`vaani-qa/tests/known_failures.rs`, which re-drives every entry and fails when
+one starts passing — that test is what forced the deletion, so this is the
+mechanism working rather than an oversight.
+
+The check it used to excuse now **passes**, and
+`every_tracked_failure_still_reproduces` asserts that as a `Verdict::Pass`
+rather than deleting the coverage. The measured result:
+
+```
+PASS times.no_time_precedes_the_origin — 0 of 6 pairs start before 05:00 ms
+```
+
+against the same +5-minute work audio that reported *2 of 6* before.
+
+The fix has three parts, and only the first is a behaviour change:
+
+1. `AsrStage::run` builds `MediaWindow::of_buffer(audio)` once and passes it to
+   `Chunker::plan_within` and `Transcript::push_chunk_within`. The previous
+   `push_chunk_within(..., audio.duration())` was passing a **length** as a
+   bound, which on a +5-minute buffer pinned the whole transcript to
+   `0..89 600` — before the recording even started.
+2. `Chunker::pad_and_coalesce` clamps its leading pad to the window's start
+   rather than to a hard-coded `0`. This is the one genuine behavioural change
+   in `vaani-vad`, and it is a no-op for any media that begins at zero, which
+   `a_zero_origin_buffer_is_unchanged_by_the_window` asserts by comparing
+   `plan_within` against `plan` output directly.
+3. `Transcript::duration` is a `MediaLength` and `Chunker`'s parameter is
+   `media_end`, so neither mistake can be written again.

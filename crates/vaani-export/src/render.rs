@@ -40,7 +40,7 @@
 //!
 //! Key order is fixed by the struct order, and `serde_json` preserves it.
 
-use vaani_core::{APP_VERSION, DATA_MODEL_VERSION, Time, Transcript};
+use vaani_core::{APP_VERSION, DATA_MODEL_VERSION, MediaLength, Time, Transcript};
 
 use crate::cues;
 use crate::error;
@@ -410,7 +410,7 @@ fn render_json(transcript: &Transcript, options: &ExportOptions) -> vaani_core::
         exported_at: options.timestamp_ms.and_then(vaani_storage::clock::rfc3339),
         source: options.source_name.as_ref().map(|name| JsonSource {
             file: Some(name.clone()),
-            duration_ms: transcript.duration.map(Time::as_millis),
+            duration_ms: transcript.duration.map(MediaLength::as_millis),
             speakers: transcript.speakers.len(),
         }),
         options: JsonOptions {
@@ -456,7 +456,7 @@ mod tests {
 
     fn transcript() -> Transcript {
         let mut t = Transcript::new(EngineStamp::asr("sravaani", "1.0"));
-        t.duration = Some(Time(65_000));
+        t.duration = Some(MediaLength::from_millis(65_000));
         t.speakers = vec![Speaker {
             index: 0,
             name: Some("Krishna".into()),
