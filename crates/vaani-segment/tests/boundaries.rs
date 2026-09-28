@@ -9,11 +9,17 @@
 //! written down by hand, because the ground truth is known exactly.
 
 use vaani_core::pipeline::{DiarizationResult, SpeakerSpan};
-use vaani_core::{EngineStamp, Segment, Time, Transcript, Word};
+use vaani_core::{EngineStamp, MediaLength, MediaWindow, Segment, Time, Transcript, Word};
 use vaani_segment::{GroupingPolicy, group, group_with_diarization, plan_groups};
 
 fn t(ms: i64) -> Time {
     Time::from_millis(ms)
+}
+
+/// A **length**, in the type-system sense. Distinct from `t` on purpose, so
+/// that every line in these tests says which of the two it is holding.
+fn len(ms: i64) -> MediaLength {
+    MediaLength::from_millis(ms)
 }
 
 /// A transcript of one-word segments, which is exactly what the ASR adapter
@@ -705,14 +711,11 @@ fn words_with_identical_times_keep_their_input_order() {
 fn segments_are_clamped_into_the_media_bounds() {
     // `push_chunk` has no upper clamp, so a word can land past the end of the
     // recording. The buffer is the authority on where the media ends, and the
-    // caller states that window explicitly — see `MediaBounds`.
+    // caller states that window explicitly — see `MediaWindow`.
     let mut tr = one_word_per_segment(&[("w0000", 9_800, 10_023)]);
-    let report = vaani_segment::group_within(
-        &mut tr,
-        vaani_segment::MediaBounds::of_duration(t(10_000)),
-        &policy(),
-    )
-    .unwrap();
+    let report =
+        vaani_segment::group_within(&mut tr, MediaWindow::of_length(len(10_000)), &policy())
+            .unwrap();
     assert_eq!(tr.segments[0].end, t(10_000));
     assert_eq!(report.segments_clamped_to_media, 1);
     assert!(!report.input_was_well_formed());
@@ -725,7 +728,7 @@ fn without_bounds_nothing_is_clamped() {
     // The zero-based entry points do not know where the media starts, so they
     // clamp nothing rather than guessing — a length is not an absolute time.
     let mut tr = one_word_per_segment(&[("w0000", 9_800, 10_023)]);
-    tr.duration = Some(t(10_000));
+    tr.duration = Some(len(10_000));
     let report = group(&mut tr, &policy()).unwrap();
     assert_eq!(tr.segments[0].end, t(10_023), "nothing to clamp against");
     assert_eq!(report.segments_clamped_to_media, 0);
@@ -733,14 +736,19 @@ fn without_bounds_nothing_is_clamped() {
 
 #[test]
 fn a_transcript_that_does_not_start_at_zero_is_not_pinned_to_the_origin() {
-    // Regression. A10's conformance suite caught this: the media clamp compared
-    // an **absolute** segment end against `Transcript::duration`, which is a
-    // **length**. For a transcript whose times run 300 000..600 000 with a
-    // declared duration of 300 000, that crushed all three segments to
-    // 300 000..300 001 and left every word outside its own segment. Three
-    // conformance checks failed at once.
+    // Regression, and the reason `MediaBounds` existed. A10's conformance suite
+    // caught this: the media clamp compared an **absolute** segment end against
+    // `Transcript::duration`, which is a **length**. For a transcript whose
+    // times run 300 000..600 000 with a declared duration of 300 000, that
+    // crushed all three segments to 300 000..300 001 and left every word outside
+    // its own segment. Three conformance checks failed at once.
+    //
+    // The bug is no longer writable: `duration` is a `MediaLength`, which does
+    // not compare with a `Time`. What this test now pins is the *corrected*
+    // behaviour from both sides — that a declared length is not a bound, and
+    // that the window the transcript actually implies contains its segments.
     let mut tr = Transcript::new(EngineStamp::asr("x", "0"));
-    tr.duration = Some(t(300_000));
+    tr.duration = Some(len(300_000));
     let half = 150_000;
     tr.push_chunk(
         t(300_000),
@@ -770,6 +778,26 @@ fn a_transcript_that_does_not_start_at_zero_is_not_pinned_to_the_origin() {
     }
     assert_eq!(report.words_in, 3);
     assert_eq!(report.words_out, 3);
+
+    // The declared length, read as the window the old code used, is `0..300000`
+    // and contains none of this transcript. That is the defect, stated.
+    let wrong = MediaWindow::of_length(len(300_000));
+    assert_eq!(
+        tr.segments
+            .iter()
+            .filter(|s| wrong.contains(s.start))
+            .count(),
+        0
+    );
+    // The window the transcript actually implies — origin + length — contains
+    // all of it, and clamping against that window changes nothing.
+    let right = tr.media_window().expect("a length was declared");
+    assert_eq!(right.start(), t(300_000));
+    assert_eq!(right.end(), t(600_000));
+    let mut clamped = tr.clone();
+    let report = vaani_segment::group_within(&mut clamped, right, &policy()).unwrap();
+    assert_eq!(report.segments_clamped_to_media, 0);
+    assert_eq!(clamped.segments, tr.segments);
 }
 
 #[test]
@@ -855,13 +883,13 @@ fn the_first_non_empty_language_wins() {
 fn grouping_leaves_the_rest_of_the_transcript_alone() {
     let mut tr = one_word_per_segment(&[("w0000", 0, 300), ("w0001", 5_000, 5_300)]);
     let id = tr.id.clone();
-    tr.duration = Some(t(60_000));
+    tr.duration = Some(len(60_000));
     tr.mode = vaani_core::TranscriptMode::Clean;
     tr.edited = true;
     tr.engine.diarization_model = Some("heuristic-v1".into());
     group(&mut tr, &policy()).unwrap();
     assert_eq!(tr.id, id);
-    assert_eq!(tr.duration, Some(t(60_000)));
+    assert_eq!(tr.duration, Some(len(60_000)));
     assert_eq!(tr.mode, vaani_core::TranscriptMode::Clean);
     assert!(tr.edited);
     assert_eq!(tr.engine.diarization_model.as_deref(), Some("heuristic-v1"));

@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use vaani_core::{ErrorCode, Time};
+use vaani_core::{ErrorCode, MediaLength};
 use vaani_export::{
     ExportFormat, ExportOptions, ExportTarget, export_all, export_to_file, safe_file_name,
     write_atomic,
@@ -350,7 +350,7 @@ fn timestamps_in_the_file_match_the_transcript_exactly() {
     // change rounds them, this fails.
     let dir = TempDir::new("times");
     let mut t = fixtures::transcript(2, 3);
-    t.duration = Some(Time(7_825_400));
+    t.duration = Some(MediaLength::from_millis(7_825_400));
     let o = ExportOptions::default().with_source_name("a.wav");
     let target = ExportTarget::Directory(dir.path().to_path_buf());
     let srt = export_to_file(&t, ExportFormat::Srt, &target, &o).unwrap();

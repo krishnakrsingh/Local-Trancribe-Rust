@@ -565,48 +565,44 @@ pub trait ConformanceStage: Send + Sync {
     }
 }
 
-/// The coordinate-space violation in `vaani_app`'s ASR stage, tracked.
+/// Tracked failures in `vaani_app`'s ASR stage: **none**.
 ///
-/// **What happens.** `AsrStage::run` plans chunks with
-/// `Chunker::plan(&speech, ctx.artifacts.audio()?.duration())`. `duration()` is a
-/// *length*, but `speech` holds *absolute* times, so the chunker is comparing an
-/// absolute segment end against a relative total. For any buffer that does not
-/// start at zero the two disagree by the buffer's `start_time`.
+/// # The entry that was here, and why it is gone
 ///
-/// **Why it does not bite in production, and why it still matters.** Decode
-/// always produces `start_time == Time::ZERO`, so with a real input the total and
-/// the segment end agree and the stage is correct. The moment a buffer arrives
-/// with a non-zero origin — a resumed job, a slice handed between stages, a
-/// future second input source — the first chunk's times come back before the
-/// origin and the transcript is silently offset.
+/// This function used to return one entry for `times.no_time_precedes_the_origin`:
 ///
-/// **Minimal reproduction.**
-/// ```ignore
-/// let audio  = AudioBuffer::mono(samples, 16_000, Time(300_000));
-/// let speech = SpeechTimeline { segments: vec![SpeechSegment { start: Time(300_000),
-///                                 end: Time(389_600), confidence: None }],
-///                               speech_duration_ms: 89_600 };
-/// // Upstream::AudioAndSpeech seeds exactly this pair; run the stage and read
-/// // ctx.artifacts.transcript.unwrap().segments[0].start -- it is < 300_000.
-/// ```
+/// > `AsrStage::run` plans chunks with `Chunker::plan(&speech,
+/// > ctx.artifacts.audio()?.duration())`. `duration()` is a *length*, but
+/// > `speech` holds *absolute* times, so the chunker is comparing an absolute
+/// > segment end against a relative total. For any buffer that does not start
+/// > at zero the two disagree by the buffer's `start_time`. ... The gate proves
+/// > it by running the ASR stage on the +5-minute work audio, where 2 of 6
+/// > emitted pairs start before 300000 ms.
 ///
-/// **The fix belongs in `vaani-app`, not here.** Either the chunker should be
-/// given the absolute end (`audio.start_time + audio.duration()`), or `AsrStage`
-/// should rebase the timeline it is handed. Both are one line; neither is this
-/// crate's to make.
+/// It was latent rather than live, because decode always yields
+/// `start_time == Time::ZERO` and for a zero-origin buffer a length and an end
+/// are the same number. It became a silent transcript offset the moment a
+/// buffer arrived with a non-zero origin.
+///
+/// **It is fixed.** `AsrStage::run` now builds
+/// `MediaWindow::of_buffer(audio)` once and hands that window to
+/// `Chunker::plan_within` and to `Transcript::push_chunk_within`. The chunker's
+/// leading pad is clamped to the window's start rather than to a hard-coded
+/// zero, and the transcript is clamped to the window's end rather than to the
+/// buffer's length. The check now reports *0 of 6 pairs start before 05:00 ms*.
+///
+/// The stronger reason it cannot come back is structural rather than a fix:
+/// `Transcript::duration` is an `Option<MediaLength>`, which does not compare
+/// with a `Time` at all, and the chunker's `media_end` parameter is spelled
+/// that way in its name. The mistake is no longer writable. See
+/// `docs/architecture/TIMESTAMP_CONTRACT.md`.
+///
+/// The registry is policed by `tests/known_failures.rs`, which re-drives every
+/// entry and fails when one starts passing. That is what forced this deletion,
+/// which is the mechanism working as designed rather than an oversight.
 #[must_use]
 pub fn asr_stage_known_failures() -> Vec<KnownFailure> {
-    vec![KnownFailure::new(
-        "times.no_time_precedes_the_origin",
-        "vaani-app src/stages/asr.rs AsrStage::run (Chunker::plan argument)",
-        "AsrStage plans chunks with the buffer's *duration* as the total, while the speech \
-         timeline holds *absolute* times, so for any buffer whose start_time is not zero the \
-         chunker compares an absolute end against a relative total and the first chunk's times \
-         come back before the origin. In production decode always yields start_time == 0, so \
-         this is latent rather than live; it becomes a silent transcript offset the moment a \
-         buffer arrives with a non-zero origin. The gate proves it by running the ASR stage on \
-         the +5-minute work audio, where 2 of 6 emitted pairs start before 300000 ms.",
-    )]
+    Vec::new()
 }
 
 /// Known failures in the guarantees that are not about a single stage, i.e. in
@@ -2346,25 +2342,38 @@ fn full_timeline(audio: &AudioBuffer) -> SpeechTimeline {
 /// catch — so the fixture goes through the same door the real ASR stage does.
 #[must_use]
 pub fn synthetic_transcript(audio: &AudioBuffer) -> Transcript {
-    let duration = audio.duration();
+    // The buffer's **length**, and the **window** it occupies, kept apart.
+    //
+    // This fixture is the one that exposed the length/absolute confusion: it
+    // seeds a +5-minute buffer, and the old code wrote the *length* into
+    // `Transcript::duration` while the segments it went on to build were
+    // *absolute* (300_000..389_600 against a declared 89_600). Every consumer
+    // that read `duration` as a bound then crushed the transcript to the origin.
+    // They are different types now, so the two cannot be swapped by accident.
+    let length = audio.length();
+    let window = vaani_core::MediaWindow::of_buffer(audio);
     let mut t = Transcript::new(vaani_core::EngineStamp::asr("qa-conformance", "0"));
-    t.duration = Some(duration);
+    t.duration = Some(length);
     // A zero-length buffer has nothing to say, and a seeded transcript with
     // zero-width segments would make `empty.zero_length_buffer` measure this
     // fixture rather than the stage under test.
-    if duration.as_millis() <= 0 {
+    if length.as_millis() <= 0 {
         return t;
     }
-    let half = Time(duration.as_millis() / 2);
+    let half = Time::from_millis(length.as_millis() / 2);
+    // `push_chunk` takes **chunk-local** times, so the local end of the second
+    // segment is the media's *length*; the offset supplies the origin. Passing
+    // `window.end()` here instead would rebase to start+end.
+    let local_end = Time::from_millis(length.as_millis());
     t.push_chunk(
-        audio.start_time,
+        window.start(),
         vec![
             Segment::new(Time::ZERO, half).with_words(vec![
-                vaani_core::Word::new("alpha", Time::ZERO, Time(half.as_millis() / 2)),
-                vaani_core::Word::new("bravo", Time(half.as_millis() / 2), half),
+                vaani_core::Word::new("alpha", Time::ZERO, Time::from_millis(half.as_millis() / 2)),
+                vaani_core::Word::new("bravo", Time::from_millis(half.as_millis() / 2), half),
             ]),
-            Segment::new(half, duration)
-                .with_words(vec![vaani_core::Word::new("charlie", half, duration)]),
+            Segment::new(half, local_end)
+                .with_words(vec![vaani_core::Word::new("charlie", half, local_end)]),
         ],
     );
     t
@@ -2510,8 +2519,8 @@ impl ConformanceStage for AppStage {
     /// The media stage reads a file and therefore *defines* the origin of the
     /// time axis: its output starts at zero by construction. Every other stage
     /// inherits an origin and must honour it, which is the whole point of
-    /// guarantee 7. The ASR stage does not, and carries a tracked known failure
-    /// for it; see [`asr_stage_known_failures`].
+    /// guarantee 7. The ASR stage now does, and carries no tracked failure for
+    /// it; see [`asr_stage_known_failures`].
     fn offsets_by_input_start(&self) -> bool {
         self.stage.name() != "media"
     }

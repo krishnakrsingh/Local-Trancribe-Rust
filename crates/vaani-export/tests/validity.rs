@@ -21,14 +21,14 @@
 //! The awkward inputs are the point of this file. An exporter that has only ever
 //! seen a tidy three-word segment has not been tested.
 
-use vaani_core::{EngineStamp, Segment, Speaker, Time, Transcript, Word};
+use vaani_core::{EngineStamp, MediaLength, Segment, Speaker, Time, Transcript, Word};
 use vaani_export::{ExportFormat, ExportOptions, cues, render, verify};
 use vaani_storage::fixtures;
 
 /// A transcript with the shapes that break exporters.
 fn awkward() -> Transcript {
     let mut t = fixtures::transcript(0xA11CE, 40);
-    t.duration = Some(Time(783_400));
+    t.duration = Some(MediaLength::from_millis(783_400));
     t
 }
 

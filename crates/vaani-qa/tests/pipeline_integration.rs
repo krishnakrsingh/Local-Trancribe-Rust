@@ -267,7 +267,7 @@ fn media_vad_asr_diarization_store_on_a_synthesised_wav() {
     // --- times are absolute and inside the media ----------------------------
     let duration_ms = stored
         .duration
-        .map(Time::as_millis)
+        .map(vaani_core::MediaLength::as_millis)
         .expect("the ASR stage records the media duration");
     assert!(
         duration_ms > 30_000,

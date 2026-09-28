@@ -7,13 +7,26 @@
 //!
 //! # Timestamps
 //!
-//! Times are [`Time`], a signed count of milliseconds from the start of the
-//! *source media*, never from the start of a chunk or a segment. Chunk
-//! boundaries are an implementation detail of the ASR pipeline; every offset
-//! that leaves the `asr` crate has already been rebased onto the media
-//! timeline. Getting this wrong is the classic source of "the transcript is
+//! There are three timestamp types and they are not interchangeable. The full
+//! rules are in `docs/architecture/TIMESTAMP_CONTRACT.md`; the short version:
+//!
+//! * [`Time`] is a **position** — a signed count of milliseconds from the start
+//!   of the *source media*, never from the start of a chunk or a segment.
+//! * [`MediaLength`] is an **amount** — a count of milliseconds, never negative,
+//!   never a position.
+//! * [`MediaWindow`] is the **extent of the media**, in positions.
+//!
+//! A `Time` and a `MediaLength` do not compare, and neither converts into the
+//! other implicitly. That is deliberate: `Transcript::duration` used to be a
+//! `Time` and comparing it against an absolute segment end compiled silently
+//! and produced two real bugs in two different crates.
+//!
+//! Chunk boundaries are an implementation detail of the ASR pipeline; every
+//! offset that leaves the `asr` crate has already been rebased onto the media
+//! timeline. Getting that wrong is the classic source of "the transcript is
 //! three minutes ahead of the video" bugs, so the rebasing happens in exactly
-//! one place (see `Transcript::push_chunk`).
+//! one place (see `Transcript::push_chunk`), and clamping to the media happens
+//! through exactly one type (see [`MediaWindow`]).
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -44,6 +57,10 @@ impl Time {
     }
 
     /// Construct from a millisecond count.
+    ///
+    /// A `Time` here is always a **position**. If the number you have is an
+    /// amount of time, construct a [`MediaLength`] instead — that is the whole
+    /// difference this contract is about.
     pub fn from_millis(ms: i64) -> Self {
         Time(ms)
     }
@@ -102,11 +119,255 @@ impl Time {
         );
         format!("{h:02}:{m:02}:{s:02}.{ms:03}")
     }
+
+    /// The **length** of the interval from `earlier` to `self`, never negative.
+    ///
+    /// The only sanctioned way to turn two positions into an amount. Two
+    /// positions in either order have a well-defined distance; only one of them
+    /// is a forward one, so the answer is clamped at zero rather than signed.
+    ///
+    /// ```
+    /// # use vaani_core::Time;
+    /// let start = Time(1_000);
+    /// let end = Time(3_500);
+    /// assert_eq!(start.span_to(end).as_millis(), 2_500);
+    /// // Backwards gives zero, not a negative duration.
+    /// assert_eq!(end.span_to(start).as_millis(), 0);
+    /// ```
+    #[must_use]
+    pub fn span_to(self, later: Time) -> MediaLength {
+        MediaLength(later.0.saturating_sub(self.0).max(0))
+    }
+
+    /// Advance this position by a **length**.
+    ///
+    /// The other half of [`span_to`](Self::span_to): a media *end* is a media
+    /// *start* plus a media *length*, and this is the only way to build one.
+    /// `MediaWindow::end` is the same arithmetic, named.
+    ///
+    /// ```
+    /// # use vaani_core::{MediaLength, Time};
+    /// let origin = Time(300_000);
+    /// let end = origin.offset_by(MediaLength::from_millis(89_600));
+    /// assert_eq!(end, Time(389_600));
+    /// ```
+    #[must_use]
+    pub fn offset_by(self, length: MediaLength) -> Time {
+        Time(self.0.saturating_add(length.0))
+    }
 }
 
 impl fmt::Display for Time {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.format_hms())
+    }
+}
+
+/// An **amount** of time in milliseconds — a length, never a position.
+///
+/// # Why this is a separate type from [`Time`]
+///
+/// It is not tidiness. `Transcript::duration` used to be a `Time` and
+/// `Segment::start` was a `Time`, and nothing said which was which, so
+/// `segment.end > transcript.duration` compiled and was wrong: one is a
+/// position on the media timeline and the other is how long the media is.
+/// Doing that in `vaani-segment` pinned every segment of a transcript that does
+/// not start at zero to the origin, and the same confusion in `vaani-app`'s
+/// `Chunker::plan` call cost a known-failure entry in the conformance
+/// registry. Both were arithmetic that read correctly.
+///
+/// A `MediaLength` compares only with another `MediaLength`, and there is no
+/// `From<Time>` for it, so the mistake no longer type-checks:
+///
+/// ```compile_fail
+/// # use vaani_core::{EngineStamp, Segment, Time, Transcript};
+/// let mut t = Transcript::new(EngineStamp::asr("m", "1"));
+/// t.push_chunk(Time::ZERO, vec![Segment::new(Time(0), Time(9_000))]);
+/// let bound = t.duration.unwrap();
+/// // Fails to compile: `Time` cannot be compared with `MediaLength`.
+/// if t.segments[0].end > bound { }
+/// ```
+///
+/// The two legal ways to produce one are [`Time::span_to`] (a length between
+/// two positions) and [`MediaLength::from_millis`] (a number you already know
+/// is an amount, such as a decoded sample count).
+///
+/// It is `#[serde(transparent)]` over `i64`, so an exported JSON envelope and a
+/// SQLite `duration_ms` column are byte-identical to what they were before this
+/// type existed. Only the Rust type changed.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
+#[serde(transparent)]
+pub struct MediaLength(i64);
+
+impl MediaLength {
+    /// No time at all.
+    pub const ZERO: MediaLength = MediaLength(0);
+
+    /// An amount of `millis` milliseconds. Negative input clamps to zero.
+    #[must_use]
+    pub fn from_millis(millis: i64) -> Self {
+        MediaLength(millis.max(0))
+    }
+
+    /// An amount of `secs` seconds, rounded to the nearest millisecond.
+    #[must_use]
+    pub fn from_secs_f64(secs: f64) -> Self {
+        MediaLength((secs * 1000.0).round().max(0.0) as i64)
+    }
+
+    /// The amount in milliseconds.
+    #[must_use]
+    pub fn as_millis(self) -> i64 {
+        self.0
+    }
+
+    /// The amount in fractional seconds, for feeding inference code.
+    #[must_use]
+    pub fn as_secs_f64(self) -> f64 {
+        self.0 as f64 / 1000.0
+    }
+
+    /// `hh:mm:ss`, clamped at zero. The form the UI and the exporters use.
+    #[must_use]
+    pub fn format_hms(self) -> String {
+        Time(self.0).format_hms()
+    }
+
+    /// Total of two amounts, saturating rather than wrapping.
+    #[must_use]
+    pub fn saturating_add(self, other: MediaLength) -> MediaLength {
+        MediaLength(self.0.saturating_add(other.0))
+    }
+
+    /// A non-zero amount, if this is one.
+    #[must_use]
+    pub fn nonzero(self) -> Option<MediaLength> {
+        (self.0 > 0).then_some(self)
+    }
+}
+
+impl fmt::Display for MediaLength {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.format_hms())
+    }
+}
+
+/// The absolute extent of the source media: `start..end`, both positions.
+///
+/// # Why the clamp needs a type
+///
+/// The last STFT frame legitimately extends past the audio, so a time can land
+/// outside the recording and has to be clamped. Clamping needs two numbers — an
+/// origin and an end — and the only number a caller usually has to hand is a
+/// *length*. Comparing an absolute end against a length is the bug this whole
+/// contract exists to remove, and it is exactly what `vaani-segment` did before
+/// it had this type to reach for.
+///
+/// So the window is named, constructed in one of three ways, and every clamp in
+/// the product takes one. There is no way to state "the media is this long" and
+/// have it silently become a position.
+///
+/// ```
+/// # use vaani_core::{MediaLength, MediaWindow, Time};
+/// // A whole recording that starts at zero.
+/// let whole = MediaWindow::of_length(MediaLength::from_millis(10_000));
+/// assert_eq!((whole.start(), whole.end()), (Time::ZERO, Time(10_000)));
+///
+/// // A slice handed between stages, at +5 minutes.
+/// let slice = MediaWindow::new(Time(300_000), Time(389_600));
+/// assert_eq!(slice.length().as_millis(), 89_600);
+/// assert!(slice.contains(Time(350_000)));
+/// // The same amount read as a bare length is NOT a position, and the type
+/// // will not let you pretend otherwise: see `MediaLength`.
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaWindow {
+    start: Time,
+    end: Time,
+}
+
+impl MediaWindow {
+    /// The window an `AudioBuffer` occupies: its origin plus its length.
+    ///
+    /// This is the constructor a pipeline wants. The decoded buffer is the
+    /// authority on where the media is, and building the window from it is what
+    /// makes the length/absolute distinction impossible to get wrong at the
+    /// call site.
+    #[must_use]
+    pub fn of_buffer(buffer: &crate::media::AudioBuffer) -> Self {
+        Self {
+            start: buffer.start_time,
+            end: buffer.start_time.offset_by(buffer.length()),
+        }
+    }
+
+    /// The window of a whole recording that **starts at zero**.
+    ///
+    /// The name states the assumption. If the media might start at a non-zero
+    /// offset — a resumed job, a slice, a second input source — use
+    /// [`of_buffer`](Self::of_buffer) or [`new`](Self::new) instead, because a
+    /// window built this way is `0..length` and a transcript whose times run
+    /// `300_000..389_600` lies entirely outside it.
+    #[must_use]
+    pub fn of_length(length: MediaLength) -> Self {
+        Self {
+            start: Time::ZERO,
+            end: Time::ZERO.offset_by(length),
+        }
+    }
+
+    /// A window stated outright, from two absolute positions.
+    ///
+    /// Used when the extent comes from somewhere that is not an
+    /// `AudioBuffer` — a slice index, a persisted job, a conformance fixture.
+    /// An inverted pair is normalised to a zero-length window at `start`, so a
+    /// window is never its own negation.
+    #[must_use]
+    pub fn new(start: Time, end: Time) -> Self {
+        Self {
+            start,
+            end: end.max(start),
+        }
+    }
+
+    /// Where the media starts, absolutely.
+    #[must_use]
+    pub fn start(&self) -> Time {
+        self.start
+    }
+
+    /// Where the media ends, absolutely. The clamp bound.
+    #[must_use]
+    pub fn end(&self) -> Time {
+        self.end
+    }
+
+    /// How long the media is — an amount, derived, never stored twice.
+    #[must_use]
+    pub fn length(&self) -> MediaLength {
+        self.start.span_to(self.end)
+    }
+
+    /// Whether `t` lies inside the window, half-open at the end.
+    #[must_use]
+    pub fn contains(&self, t: Time) -> bool {
+        t >= self.start && t < self.end
+    }
+
+    /// The furthest into the window `t` may be. The only legal clamp.
+    #[must_use]
+    pub fn clamp(&self, t: Time) -> Time {
+        t.max(self.start).min(self.end)
+    }
+
+    /// A `[start, end)` pair clamped into the window and repaired if inverted.
+    #[must_use]
+    pub fn clamp_span(&self, start: Time, end: Time) -> (Time, Time) {
+        let s = self.clamp(start);
+        let e = self.clamp(end);
+        if e < s { (s, s) } else { (s, e) }
     }
 }
 
@@ -221,9 +482,13 @@ impl Segment {
         out
     }
 
-    /// Length of the segment, never negative.
-    pub fn duration(&self) -> Time {
-        Time::from_millis(self.end.0.saturating_sub(self.start.0))
+    /// Length of the segment — an **amount**, derived, never negative.
+    ///
+    /// A `MediaLength` rather than a `Time` so that it cannot be compared
+    /// against this segment's own `start` or `end`, which are positions.
+    #[must_use]
+    pub fn duration(&self) -> MediaLength {
+        self.start.span_to(self.end)
     }
 }
 
@@ -287,9 +552,17 @@ pub enum TranscriptMode {
 #[allow(missing_docs)] // field names are the documentation
 pub struct Transcript {
     pub id: String,
-    /// Total media duration, when known. `None` for a live/streaming source.
+    /// How long the source media is, in milliseconds. `None` for a live or
+    /// streaming source, and for anything that was never measured.
+    ///
+    /// A **length**, in the type-system sense: see [`MediaLength`]. It is the
+    /// figure the UI shows as "Duration" and the one written to `duration_ms`
+    /// in SQLite and in an exported JSON envelope, and it is **not** a bound on
+    /// any timestamp. To clamp a time to the media, build a [`MediaWindow`] and
+    /// use that; `segment.end > transcript.duration` does not compile, which is
+    /// the whole point.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub duration: Option<Time>,
+    pub duration: Option<MediaLength>,
     pub segments: Vec<Segment>,
     pub speakers: Vec<Speaker>,
     pub mode: TranscriptMode,
@@ -352,59 +625,59 @@ impl Transcript {
         self.push_chunk_inner(chunk_offset, segments, None);
     }
 
-    /// Like [`push_chunk`](Self::push_chunk), but no time may exceed
-    /// `media_end`.
+    /// Like [`push_chunk`](Self::push_chunk), but no time may leave
+    /// `window`.
     ///
     /// The last STFT frame legitimately extends past the audio — measured on a
     /// real 834.197 s recording, whose last word ended at 834.220 s — and
-    /// without a media duration to clamp against there is nowhere correct for
-    /// it to go. Callers that know the media length (the decoded buffer does)
-    /// should prefer this; the rebasing, ordering and zero-clamp are identical,
-    /// only the upper bound is new.
+    /// without a media window to clamp against there is nowhere correct for it
+    /// to go. Callers that have the decoded buffer should always prefer this;
+    /// the rebasing, ordering and zero-clamp are identical, only the bounds are
+    /// new.
+    ///
+    /// A [`MediaWindow`], not a `Time`, because a clamp needs an origin as well
+    /// as an end. Passing `window.end()` here would be correct arithmetic and
+    /// still wrong whenever the media does not start at zero — the exact defect
+    /// recorded in `docs/architecture/TIMESTAMP_CONTRACT.md` §1.
     pub fn push_chunk_within(
         &mut self,
         chunk_offset: Time,
         segments: Vec<Segment>,
-        media_end: Time,
+        window: &MediaWindow,
     ) {
-        self.push_chunk_inner(chunk_offset, segments, Some(media_end));
+        self.push_chunk_inner(chunk_offset, segments, Some(*window));
     }
 
     fn push_chunk_inner(
         &mut self,
         chunk_offset: Time,
         mut segments: Vec<Segment>,
-        media_end: Option<Time>,
+        window: Option<MediaWindow>,
     ) {
         for s in &mut segments {
-            s.start = s.start.saturating_add(chunk_offset).clamp_zero();
-            s.end = s.end.saturating_add(chunk_offset).clamp_zero();
-            if let Some(end) = media_end {
+            s.start = s.start.saturating_add(chunk_offset);
+            s.end = s.end.saturating_add(chunk_offset);
+            if let Some(w) = window {
                 // Clamp to the media before repairing degenerates, so the
                 // repair below cannot push an end back past the media.
-                if s.start > end {
-                    s.start = end;
-                }
-                if s.end > end {
-                    s.end = end;
-                }
+                s.start = w.clamp(s.start);
+                s.end = w.clamp(s.end);
+            } else {
+                s.start = s.start.clamp_zero();
+                s.end = s.end.clamp_zero();
             }
-            // A word that ends before it starts would produce a negative
-            // duration and a malformed SRT cue. Clamp rather than drop: the
-            // word was recognised, it just has a degenerate time span.
             if s.end < s.start {
                 s.end = s.start;
             }
             for w in &mut s.words {
-                w.start = w.start.saturating_add(chunk_offset).clamp_zero();
-                w.end = w.end.saturating_add(chunk_offset).clamp_zero();
-                if let Some(end) = media_end {
-                    if w.start > end {
-                        w.start = end;
-                    }
-                    if w.end > end {
-                        w.end = end;
-                    }
+                w.start = w.start.saturating_add(chunk_offset);
+                w.end = w.end.saturating_add(chunk_offset);
+                if let Some(window) = window {
+                    w.start = window.clamp(w.start);
+                    w.end = window.clamp(w.end);
+                } else {
+                    w.start = w.start.clamp_zero();
+                    w.end = w.end.clamp_zero();
                 }
                 if w.end < w.start {
                     w.end = w.start;
@@ -543,14 +816,64 @@ impl Transcript {
         out
     }
 
-    /// Duration of the last segment, used when the container's declared
-    /// duration is missing or wrong (a real hazard with some M4A/MKV files).
-    pub fn inferred_duration(&self) -> Time {
+    /// Absolute end of the last segment — a **position**, not a length.
+    ///
+    /// Used when the container's declared duration is missing or wrong (a real
+    /// hazard with some M4A/MKV files). It is the end of the last thing anyone
+    /// heard, which is only *also* the media's length when the media starts at
+    /// zero — hence a separate method from [`inferred_length`](Self::inferred_length).
+    #[must_use]
+    pub fn inferred_media_end(&self) -> Time {
         self.segments
             .iter()
             .map(|s| s.end)
             .max()
             .unwrap_or(Time::ZERO)
+    }
+
+    /// Absolute start of the first segment — a **position**.
+    ///
+    /// The origin the transcript's own times run from. For a whole recording
+    /// this is zero; for a slice it is not, and a caller that needs the extent
+    /// has to use this rather than assuming `Time::ZERO`.
+    #[must_use]
+    pub fn inferred_media_start(&self) -> Time {
+        self.segments
+            .iter()
+            .map(|s| s.start)
+            .min()
+            .unwrap_or(Time::ZERO)
+            .clamp_zero()
+    }
+
+    /// How much of the media this transcript covers — an **amount**.
+    ///
+    /// Derived from the first and last segment, so it is the *transcribed*
+    /// extent, not the file's. Display code wants this; anything that needs a
+    /// bound wants [`media_window`](Self::media_window) instead.
+    #[must_use]
+    pub fn inferred_length(&self) -> MediaLength {
+        self.inferred_media_start()
+            .span_to(self.inferred_media_end())
+    }
+
+    /// The media window this transcript's times must lie inside, when it is
+    /// known.
+    ///
+    /// Built from the declared [`duration`](Self::duration) **and** the
+    /// transcript's own origin, which is the step every clamp before this type
+    /// existed got wrong: it used the declared length as though it were an
+    /// absolute end. A transcript that starts at +5 minutes with a declared
+    /// length of 300 s gives `300_000..600_000` here, not `0..300_000`.
+    ///
+    /// `None` when no duration was ever declared, because guessing a window is
+    /// how the original defect was introduced.
+    #[must_use]
+    pub fn media_window(&self) -> Option<MediaWindow> {
+        self.duration.map(|length| {
+            let start = self.inferred_media_start();
+            MediaWindow::new(start, start.offset_by(length))
+        })
     }
 
     /// Look up a segment for editing, by its stable id.
@@ -645,7 +968,7 @@ mod tests {
         t.push_chunk_within(
             Time(834_000),
             vec![seg(0, 500, &[("last", 0, 220)])],
-            Time(834_197),
+            &MediaWindow::of_length(MediaLength::from_millis(834_197)),
         );
         assert_eq!(t.segments[0].end, Time(834_197));
         assert_eq!(t.segments[0].words[0].end, Time(834_197));
@@ -660,7 +983,11 @@ mod tests {
         // boundary rather than surviving outside it. The clamp runs first so
         // the repair cannot push the end back out.
         let mut t = Transcript::new(EngineStamp::asr("test", "1"));
-        t.push_chunk_within(Time(0), vec![seg(11_000, 12_000, &[])], Time(10_000));
+        t.push_chunk_within(
+            Time(0),
+            vec![seg(11_000, 12_000, &[])],
+            &MediaWindow::of_length(MediaLength::from_millis(10_000)),
+        );
         assert_eq!(t.segments[0].start, Time(10_000));
         assert_eq!(t.segments[0].end, Time(10_000));
     }
@@ -797,7 +1124,7 @@ mod tests {
     #[test]
     fn transcript_round_trips_through_json() {
         let mut t = Transcript::new(EngineStamp::asr("sravaani", "1.0"));
-        t.duration = Some(Time(720_000));
+        t.duration = Some(MediaLength::from_millis(720_000));
         t.push_chunk(
             Time(0),
             vec![seg(0, 1_000, &[("नमस्ते", 0, 1_000)]).with_speaker(Some(0))],
@@ -806,5 +1133,268 @@ mod tests {
         let json = serde_json::to_string(&t).unwrap();
         let back: Transcript = serde_json::from_str(&json).unwrap();
         assert_eq!(t, back);
+    }
+
+    #[test]
+    fn the_wire_format_of_duration_did_not_change() {
+        // The newtype is `#[serde(transparent)]` over `i64`, so an exported
+        // transcript is byte-identical to what the previous `Option<Time>`
+        // produced. If this test ever fails, an export consumer breaks.
+        let mut t = Transcript::new(EngineStamp::asr("m", "1"));
+        t.duration = Some(MediaLength::from_millis(783_400));
+        let json = serde_json::to_string(&t).unwrap();
+        assert!(
+            json.contains("\"duration\":783400"),
+            "duration must still serialise as a bare integer: {json}"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // The historical bug class: a length compared against an absolute time
+    // ---------------------------------------------------------------------
+
+    /// A11, verbatim. `vaani-segment` compared an **absolute** segment end
+    /// against `Transcript::duration`, which is a **length**. A transcript
+    /// whose times run `300_000..600_000` with a declared duration of
+    /// `300_000` had every segment crushed to `300_000..300_001` and every word
+    /// left outside its own segment.
+    ///
+    /// The regression is not "the numbers came out right" — it is that the
+    /// mistake can no longer be *written*: `MediaLength` and `Time` do not
+    /// compare, which the `compile_fail` doctest on `MediaLength` asserts. What
+    /// this test pins is the corrected arithmetic, using the type-correct
+    /// expression for the same clamp.
+    #[test]
+    fn a_transcript_that_does_not_start_at_zero_is_not_pinned_to_the_origin() {
+        // The fixture, exactly as the conformance harness seeds it: five
+        // minutes of origin, a 300 s declared length, absolute times.
+        let mut t = Transcript::new(EngineStamp::asr("x", "0"));
+        t.duration = Some(MediaLength::from_millis(300_000));
+        let half = 150_000;
+        t.push_chunk(
+            Time(300_000),
+            vec![
+                Segment::new(Time(0), Time(half)).with_words(vec![
+                    Word::new("alpha", Time(0), Time(half / 2)),
+                    Word::new("bravo", Time(half / 2), Time(half)),
+                ]),
+                Segment::new(Time(half), Time(300_000)).with_words(vec![Word::new(
+                    "charlie",
+                    Time(half),
+                    Time(300_000),
+                )]),
+            ],
+        );
+
+        // The type-correct reading of the same fact: a declared length plus the
+        // transcript's own origin. The old code had no way to write this.
+        let window = t.media_window().expect("a duration was declared");
+        assert_eq!(window.start(), Time(300_000));
+        assert_eq!(window.end(), Time(600_000));
+        assert_eq!(window.length(), t.duration.unwrap());
+
+        for seg in &t.segments {
+            assert!(
+                window.contains(seg.start),
+                "{:?} is before the window",
+                seg.start
+            );
+            assert!(seg.end <= window.end(), "{:?} is past the window", seg.end);
+            for w in &seg.words {
+                assert!(
+                    w.start >= seg.start && w.end <= seg.end,
+                    "a word fell outside its own segment"
+                );
+            }
+        }
+        // And the value the buggy code used as a bound, `0..300_000`, contains
+        // none of it: this is the whole defect in one assertion.
+        let wrong = MediaWindow::of_length(t.duration.unwrap());
+        assert_eq!(
+            t.segments
+                .iter()
+                .filter(|s| wrong.contains(s.start))
+                .count(),
+            0,
+            "a length used as a window happens to contain this transcript, which means the \
+             test is not exercising the non-zero origin"
+        );
+    }
+
+    /// A non-zero media `start_time` with a correct absolute end.
+    ///
+    /// The pipeline case: decode gives `start_time == 0`, so the length and the
+    /// end coincide and every bug in this class is invisible. A slice, a resumed
+    /// job or a second source makes them differ, and the two must not be
+    /// conflated.
+    #[test]
+    fn a_nonzero_media_start_time_clamps_against_the_absolute_end() {
+        // 2 s of mono 16 kHz audio that begins five minutes into the recording.
+        let audio = crate::media::AudioBuffer::mono(vec![0.0; 32_000], 16_000, Time(300_000));
+        assert_eq!(audio.length(), MediaLength::from_millis(2_000));
+        let window = MediaWindow::of_buffer(&audio);
+        assert_eq!(window.start(), Time(300_000));
+        assert_eq!(window.end(), Time(302_000));
+
+        // A chunk taken from the tail of that buffer, whose last frame runs 20
+        // ms past the audio — the measured ASR case.
+        let mut t = Transcript::new(EngineStamp::asr("m", "1"));
+        t.duration = Some(window.length());
+        t.push_chunk_within(
+            Time(300_000),
+            vec![seg(0, 2_020, &[("tail", 0, 2_020)])],
+            &window,
+        );
+        assert_eq!(t.segments[0].end, Time(302_000));
+        assert!(t.segments[0].end <= window.end());
+
+        // The old call passed `audio.duration()` — the *length* — where the
+        // clamp needed an *end*. On this buffer that pins the whole transcript
+        // to 2_000 ms, which is before the recording even starts.
+        let old = MediaWindow::of_length(audio.length());
+        assert_eq!(old.end(), Time(2_000));
+        assert!(t.segments[0].start > old.end());
+    }
+
+    /// A chunk whose local times plus an offset land inside the media.
+    ///
+    /// This is what every real ASR chunk does, and it is the shape the
+    /// conformance harness runs: local `0..N` plus a non-zero offset, checked
+    /// against the window built from the same buffer.
+    #[test]
+    fn chunk_local_times_plus_an_offset_land_inside_the_media() {
+        let audio = crate::media::AudioBuffer::mono(vec![0.0; 16_000 * 90], 16_000, Time(300_000));
+        let window = MediaWindow::of_buffer(&audio);
+        let mut t = Transcript::new(EngineStamp::asr("m", "1"));
+        t.duration = Some(window.length());
+
+        // Three 30-second chunks, the last one overrunning by one frame.
+        for (i, offset) in [0i64, 30_000, 60_000].into_iter().enumerate() {
+            let local = if i == 2 { 30_020 } else { 30_000 };
+            t.push_chunk_within(
+                window.start().offset_by(MediaLength::from_millis(offset)),
+                vec![seg(0, local, &[("w", 0, local)])],
+                &window,
+            );
+        }
+        for s in &t.segments {
+            assert!(
+                window.contains(s.start),
+                "chunk at {} ms is outside {}..{}",
+                s.start,
+                window.start(),
+                window.end()
+            );
+            assert!(s.end <= window.end());
+            for w in &s.words {
+                assert!(w.start >= s.start && w.end <= s.end);
+            }
+        }
+        // Only the last one was clipped, and only by the one frame that ran
+        // past the audio.
+        assert_eq!(t.segments[2].end, window.end());
+        assert_eq!(t.segments[0].end, Time(330_000));
+    }
+
+    /// A2's known failure: `Chunker::plan(&speech, audio.duration())` — an
+    /// absolute speech end clamped against a relative total.
+    ///
+    /// The chunker lives in `vaani-vad`, so the defect is reproduced here as
+    /// the contract-level fact it rests on: **for a buffer with a non-zero
+    /// origin, the buffer's length and the buffer's end are different numbers,
+    /// and only the end bounds a time.** The chunker's own test pins the same
+    /// fact; this one pins the number.
+    #[test]
+    fn a_length_and_an_absolute_end_differ_when_the_media_starts_late() {
+        let audio = crate::media::AudioBuffer::mono(vec![0.0; 16_000 * 90], 16_000, Time(300_000));
+        let length = audio.length();
+        let end = MediaWindow::of_buffer(&audio).end();
+        assert_eq!(length.as_millis(), 90_000);
+        assert_eq!(end, Time(390_000));
+        assert_ne!(end, Time::from_millis(length.as_millis()));
+
+        // A speech span anywhere in the buffer is inside the window and outside
+        // the length read as a position. This is the exact comparison the
+        // conformance harness reports as times before the origin.
+        let speech = MediaWindow::new(Time(300_000), Time(389_600));
+        let window = MediaWindow::of_buffer(&audio);
+        assert!(window.contains(speech.start()));
+        assert!(!MediaWindow::of_length(length).contains(speech.start()));
+        assert_eq!(speech.length(), Time(300_000).span_to(Time(389_600)));
+    }
+
+    /// The unambiguous API makes the old mistake impossible to express.
+    ///
+    /// The `compile_fail` doctests on [`MediaLength`] and [`MediaWindow`] are
+    /// the machine-checked half: they run in the ordinary `cargo test
+    /// --workspace` gate and fail the build if the two types ever become
+    /// comparable. This test is the half that can be a runtime assert — the
+    /// conversions that *are* available, and the ones that are not reachable
+    /// without an explicit act.
+    #[test]
+    fn the_type_system_separates_positions_from_amounts() {
+        // A length is produced from two positions, or from a number that is
+        // already known to be an amount. Never from one position.
+        assert_eq!(Time(1_000).span_to(Time(3_500)).as_millis(), 2_500);
+        assert_eq!(MediaLength::from_millis(-7), MediaLength::ZERO);
+
+        // A position is advanced by an amount. Never by a position.
+        assert_eq!(
+            Time(300_000).offset_by(MediaLength::from_millis(90_000)),
+            Time(390_000)
+        );
+
+        // A window is two positions, and its own length is derived rather than
+        // stored — so the two can never disagree.
+        let w = MediaWindow::new(Time(300_000), Time(390_000));
+        assert_eq!(w.length(), MediaLength::from_millis(90_000));
+        assert_eq!(w.start().span_to(w.end()), w.length());
+
+        // A segment's own length is an amount, and cannot be its own start.
+        let s = Segment::new(Time(300_000), Time(330_000));
+        assert_eq!(s.duration(), MediaLength::from_millis(30_000));
+        assert_eq!(s.start.span_to(s.end), s.duration());
+    }
+
+    #[test]
+    fn a_window_clamps_both_ends_and_repairs_inversion() {
+        let w = MediaWindow::new(Time(300_000), Time(390_000));
+        assert_eq!(w.clamp(Time(0)), Time(300_000));
+        assert_eq!(w.clamp(Time(999_999)), Time(390_000));
+        assert_eq!(w.clamp(Time(350_000)), Time(350_000));
+        assert_eq!(
+            w.clamp_span(Time(0), Time(999_999)),
+            (Time(300_000), Time(390_000))
+        );
+        // An inverted pair collapses to the origin of the window rather than
+        // inverting, which would put an end before its start.
+        assert_eq!(
+            w.clamp_span(Time(999_999), Time(0)),
+            (Time(390_000), Time(390_000))
+        );
+        // An inverted window is normalised, so `clamp` is total.
+        let bad = MediaWindow::new(Time(390_000), Time(300_000));
+        assert_eq!(bad.length(), MediaLength::ZERO);
+        assert_eq!(bad.clamp(Time(350_000)), Time(390_000));
+    }
+
+    #[test]
+    fn inferred_length_and_media_window_agree_with_each_other() {
+        let mut t = Transcript::new(EngineStamp::asr("m", "1"));
+        t.push_chunk(
+            Time(300_000),
+            vec![
+                seg(0, 1_000, &[("a", 0, 1_000)]),
+                seg(1_000, 2_000, &[("b", 1_000, 2_000)]),
+            ],
+        );
+        assert_eq!(t.inferred_media_start(), Time(300_000));
+        assert_eq!(t.inferred_media_end(), Time(302_000));
+        assert_eq!(t.inferred_length(), MediaLength::from_millis(2_000));
+        // No declared duration means no window: guessing one is what the
+        // original defect was.
+        assert!(t.media_window().is_none());
+        t.duration = Some(MediaLength::from_millis(10_000));
+        assert_eq!(t.media_window().unwrap().end(), Time(310_000));
     }
 }

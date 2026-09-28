@@ -91,7 +91,7 @@ fn times_are_stored_in_source_media_coordinates_and_never_rebased() {
         seg.words = vec![vaani_core::Word::new("word", Time(start), Time(end))];
         t.segments.push(seg);
     }
-    t.duration = Some(Time(1_000_000_000));
+    t.duration = Some(vaani_core::MediaLength::from_millis(1_000_000_000));
     store
         .upsert_job(&JobRecord::new("j", dir.join("a.wav")))
         .unwrap();
@@ -109,7 +109,10 @@ fn times_are_stored_in_source_media_coordinates_and_never_rebased() {
         "a zero-length segment survives"
     );
     assert_eq!(back.segments[3].end, Time(1_000_000_000));
-    assert_eq!(back.duration, Some(Time(1_000_000_000)));
+    assert_eq!(
+        back.duration,
+        Some(vaani_core::MediaLength::from_millis(1_000_000_000))
+    );
     // The raw column is an integer, not a formatted string.
     let raw: i64 = store
         .with_read(|conn| {

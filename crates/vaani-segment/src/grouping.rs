@@ -97,6 +97,13 @@ pub const MIN_SEGMENT_MS: i64 = 1;
 /// # Why this is a parameter and not `Transcript::duration`
 ///
 /// `Transcript::duration` is a **length** — "total media duration" — while
+/// The absolute media window a transcript's times must lie inside.
+///
+/// # This is now a re-export, and that is the point
+///
+/// `MediaBounds` used to be defined here, as a **workaround**.
+///
+/// `Transcript::duration` is a **length** — "total media duration" — while
 /// `Segment::start` and `Word::start` are **absolute** offsets from the start of
 /// the media. Comparing one against the other is a category error, and it is one
 /// this crate made: clamping a segment's absolute end to a length crushes every
@@ -110,39 +117,20 @@ pub const MIN_SEGMENT_MS: i64 = 1;
 /// `300000..300001` with their words lying outside them. Three conformance
 /// checks failed at once. The arithmetic was plausible; it was wrong.
 ///
-/// So the caller states the window it means, in the units the caller has. The
-/// pipelines build it from the `AudioBuffer` they already decoded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MediaBounds {
-    /// The start of the media, in absolute milliseconds. Zero for a decoded
-    /// file; non-zero for a slice handed between stages or a resumed job.
-    pub start: Time,
-    /// The end of the media, in absolute milliseconds — `start + length`.
-    pub end: Time,
-}
-
-impl MediaBounds {
-    /// The window an `AudioBuffer` occupies: its origin plus its length.
-    ///
-    /// This is the constructor a pipeline wants, and the one that makes the
-    /// length/absolute distinction impossible to get wrong at the call site.
-    #[must_use]
-    pub fn of_buffer(buffer: &vaani_core::media::AudioBuffer) -> Self {
-        Self {
-            start: buffer.start_time,
-            end: buffer.start_time.saturating_add(buffer.duration()),
-        }
-    }
-
-    /// The window of a whole recording that starts at zero.
-    #[must_use]
-    pub fn of_duration(duration: Time) -> Self {
-        Self {
-            start: Time::ZERO,
-            end: duration,
-        }
-    }
-}
+/// The workaround existed because the contract crate had no honest way to say
+/// "here is the media", so each feature crate invented one. `vaani-core` now
+/// owns the type — `MediaWindow`, in `docs/architecture/TIMESTAMP_CONTRACT.md` —
+/// and this alias exists so that every existing call site keeps compiling while
+/// there is exactly one such type in the workspace.
+///
+/// The stronger fix is in the contract: `Transcript::duration` is an
+/// `Option<MediaLength>`, which does not compare with a `Time` at all, so the
+/// mistake no longer compiles rather than merely being discouraged.
+///
+/// Constructors come from the contract type: `MediaWindow::of_buffer` (the
+/// pipelines), `MediaWindow::new` (an extent stated outright), and
+/// `MediaWindow::of_length` (assumes a zero origin, and says so in its name).
+pub use vaani_core::transcript::MediaWindow as MediaBounds;
 
 /// One word, flattened out of its segment, plus where it came from.
 #[derive(Debug, Clone)]
@@ -256,8 +244,7 @@ impl GroupingPlan {
 ///
 /// No media bounds are applied, because this entry point does not know where
 /// the media starts. Use [`group_within`] when the caller has an `AudioBuffer`;
-/// see [`MediaBounds`] for why the distinction matters.
-///
+/// see [`MediaBounds`] for why the distinction matters.///
 /// Existing `Segment::speaker` values are **honoured**: a group's speaker is the
 /// speaker owning the most of its words, so calling this on a transcript that
 /// has already been attributed does not throw the attribution away. Use
@@ -283,8 +270,9 @@ pub fn group(
 /// [`group`], with the absolute media window the segments must lie inside.
 ///
 /// This is the entry point a pipeline should call: it has the `AudioBuffer`, and
-/// [`MediaBounds::of_buffer`] turns it into a window without the caller having
-/// to think about lengths versus absolute offsets.
+/// [`MediaWindow::of_buffer`](vaani_core::transcript::MediaWindow::of_buffer)
+/// turns it into a window without the caller having to think about lengths
+/// versus absolute offsets.
 pub fn group_within(
     transcript: &mut Transcript,
     bounds: MediaBounds,
@@ -790,12 +778,16 @@ fn build_one(
     // clamp, so a word can land past the end of the recording, and the buffer
     // the stage decoded is the authority on where the media ends.
     if let Some(bounds) = bounds {
-        if start > bounds.end {
-            start = bounds.end;
+        // `MediaWindow::clamp_span` is the only legal clamp, and it is
+        // expressed in the contract crate so that there is exactly one
+        // implementation of "inside the media" in the workspace.
+        let (clamped_start, clamped_end) = bounds.clamp_span(start, end);
+        if clamped_start != start {
+            start = clamped_start;
             report.segments_clamped_to_media += 1;
         }
-        if end > bounds.end {
-            end = bounds.end;
+        if clamped_end != end {
+            end = clamped_end;
             report.segments_clamped_to_media += 1;
         }
     }

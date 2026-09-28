@@ -205,16 +205,46 @@ impl AudioBuffer {
     }
 
     /// Length of this buffer, from the sample count rather than the container
-    /// header. A container's declared duration is frequently wrong for MKV and
-    /// sometimes for M4A.
+    /// header, as an **amount** of time.
+    ///
+    /// This is the correct accessor and the one new code should use: the
+    /// buffer's length is a `MediaLength`, and pairing it with
+    /// `start_time` is what
+    /// [`MediaWindow::of_buffer`](crate::transcript::MediaWindow::of_buffer)
+    /// does. A container's declared duration is frequently wrong for MKV and
+    /// sometimes for M4A, which is why the sample count wins.
     #[must_use]
-    pub fn duration(&self) -> Time {
+    pub fn length(&self) -> crate::MediaLength {
         if self.sample_rate == 0 {
-            return Time::ZERO;
+            return crate::MediaLength::ZERO;
         }
         // Round rather than truncate: a 3-hour recording must not lose a
         // millisecond per chunk boundary.
-        Time::from_millis((self.frames() as u64 * 1000 / self.sample_rate as u64) as i64)
+        crate::MediaLength::from_millis(
+            (self.frames() as u64 * 1000 / self.sample_rate as u64) as i64,
+        )
+    }
+
+    /// Length of this buffer, from the sample count rather than the container
+    /// header. A container's declared duration is frequently wrong for MKV and
+    /// sometimes for M4A.
+    ///
+    /// # This returns a length in a position type
+    ///
+    /// It is a `MediaLength` in all but name, and it is the source of a real
+    /// defect: `Chunker::plan(&speech, audio.duration())` passes this to a
+    /// parameter that means an **absolute end**, which is correct only while
+    /// `start_time` is zero. Use [`length`](Self::length) in new code, or
+    /// [`MediaWindow::of_buffer`](crate::transcript::MediaWindow::of_buffer)
+    /// and take its `end()`.
+    ///
+    /// The return type is still `Time` because `vaani-diarization` and the
+    /// frozen `vaani-asr` both call it and neither may be changed in the same
+    /// commit as this contract. That step is written down in
+    /// `docs/architecture/TIMESTAMP_CONTRACT.md` §7.
+    #[must_use]
+    pub fn duration(&self) -> Time {
+        Time::from_millis(self.length().as_millis())
     }
 
     /// Where a sample index within this buffer falls in the source media.

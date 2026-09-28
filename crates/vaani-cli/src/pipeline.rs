@@ -38,8 +38,7 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use vaani_core::{
-    CancelToken, EngineStamp, ErrorCode, Language, Progress, Result, Time, Transcript, VaaniError,
-    err,
+    CancelToken, EngineStamp, ErrorCode, Language, Progress, Result, Transcript, VaaniError, err,
 };
 use vaani_inference::Provider;
 
@@ -249,7 +248,11 @@ impl Pipeline for DirectPipeline {
 
         tracing::info!("extracting audio");
         let audio = vaani_media::decode_to_mono16k(&req.input, cancel)?;
-        let total = audio.duration();
+        // Where the media **is**, in absolute terms. Not how long it is: for a
+        // buffer that does not start at zero those are different numbers, and
+        // confusing them is the defect this stage used to have. See
+        // `docs/architecture/TIMESTAMP_CONTRACT.md`.
+        let window = vaani_core::MediaWindow::of_buffer(&audio);
 
         tracing::info!("detecting speech");
         let vad = vaani_vad::EnergyVad::new();
@@ -261,7 +264,7 @@ impl Pipeline for DirectPipeline {
         let timeline = vad.detect(&audio, cancel)?;
 
         let chunker = vaani_vad::Chunker::new(vaani_vad::ChunkPolicy::default());
-        let chunks = chunker.plan(&timeline, total);
+        let chunks = chunker.plan_within(&timeline, &window);
         tracing::info!(chunks = chunks.len(), "chunk plan ready");
 
         tracing::info!("transcribing");
@@ -272,7 +275,8 @@ impl Pipeline for DirectPipeline {
             engine.model_name(),
             engine.model_version(),
         ));
-        transcript.duration = Some(total);
+        // The *length*, which is what this field means.
+        transcript.duration = Some(window.length());
         for (i, chunk) in chunks.iter().enumerate() {
             cancel.check()?;
             let samples = audio.slice_mono(chunk.start, chunk.end);
@@ -280,20 +284,13 @@ impl Pipeline for DirectPipeline {
                 .with_language(req.language);
             let result = engine.transcribe(&asr_chunk, cancel)?;
             tracing::debug!(chunk = i, segments = result.segments.len(), "chunk done");
-            transcript.push_chunk_within(
-                chunk.start,
-                result.segments,
-                audio.start_time.saturating_add(audio.duration()),
-            );
+            transcript.push_chunk_within(chunk.start, result.segments, &window);
         }
         engine.unload();
 
-        // The absolute media window, taken from the buffer rather than from
-        // `Transcript::duration`. That field is a *length* while segment times
-        // are *absolute*, and comparing one against the other pins every segment
-        // of a transcript that does not start at zero to the origin. The
-        // conformance harness caught it; see `vaani_segment::MediaBounds`.
-        let bounds = vaani_segment::MediaBounds::of_buffer(&audio);
+        // The same window, for grouping. One expression of where the media is,
+        // used for every clamp in the pipeline.
+        let bounds = window;
         let grouping_policy = vaani_segment::GroupingPolicy::default();
 
         let num_speakers = if req.diarize {
@@ -434,13 +431,15 @@ impl Pipeline for DirectPipeline {
             }
         };
         let audio_secs = audio.duration().as_secs_f64().max(1e-9);
+        // Where the media is, not how long it is. See the transcribe path.
+        let window = vaani_core::MediaWindow::of_buffer(&audio);
 
         // vad: energy detector + chunk plan.
         let t = Instant::now();
         let vad = vaani_vad::EnergyVad::new();
         let timeline = vad.detect(&audio, cancel)?;
         let chunker = vaani_vad::Chunker::new(vaani_vad::ChunkPolicy::default());
-        let chunks = chunker.plan(&timeline, audio.duration());
+        let chunks = chunker.plan_within(&timeline, &window);
         push(
             &mut stages,
             "vad",
@@ -465,11 +464,7 @@ impl Pipeline for DirectPipeline {
                     let samples = audio.slice_mono(chunk.start, chunk.end);
                     let asr_chunk = vaani_asr::AudioChunk::new(samples, 16_000, chunk.start);
                     let result = engine.transcribe(&asr_chunk, cancel)?;
-                    transcript.push_chunk_within(
-                        chunk.start,
-                        result.segments,
-                        audio.start_time.saturating_add(audio.duration()),
-                    );
+                    transcript.push_chunk_within(chunk.start, result.segments, &window);
                 }
                 engine.unload();
                 transcript_segments = transcript.segments.len();
@@ -600,7 +595,7 @@ fn store_transcript(
     let mut job = vaani_storage::JobRecord::new(job_id, &req.input);
     job.media = Some(media.clone());
     job.container = Some(media.container.clone());
-    job.duration_ms = transcript.duration.map(Time::as_millis);
+    job.duration_ms = transcript.duration.map(vaani_core::MediaLength::as_millis);
     job.model = Some(req.model.clone());
     job.device = Some(req.device.as_str().to_string());
     job.language = Some(req.language.as_str().to_string());

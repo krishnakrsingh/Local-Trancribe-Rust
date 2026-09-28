@@ -21,6 +21,12 @@
 //! `STRICT` tables it *cannot* store a string in one, which turns the classic
 //! "timestamps are strings now" bug into an error at write time.
 //!
+//! `duration_ms` is the one column that is **not** a position: it is a
+//! **length** ([`vaani_core::MediaLength`]), so it is stored and read through
+//! `as_millis` / `from_millis` and never compared against a segment or word
+//! time. The distinction is a type, not a convention — see
+//! `docs/architecture/TIMESTAMP_CONTRACT.md`.
+//!
 //! # Text
 //!
 //! `segments.text` stores the **derived** form, i.e. exactly what
@@ -44,7 +50,9 @@ use std::collections::HashMap;
 
 use crate::Result;
 use rusqlite::{Connection, params};
-use vaani_core::{EngineStamp, Segment, Speaker, Time, Transcript, TranscriptMode, Word};
+use vaani_core::{
+    EngineStamp, MediaLength, Segment, Speaker, Time, Transcript, TranscriptMode, Word,
+};
 
 use crate::clock;
 use crate::error;
@@ -374,7 +382,7 @@ impl Store {
                     mode_wire(t.mode),
                     language,
                     engine_json,
-                    t.duration.map(Time::as_millis),
+                    t.duration.map(MediaLength::as_millis),
                     i64::from(t.edited),
                     now,
                     stats.segments,
@@ -387,7 +395,7 @@ impl Store {
                  WHERE id = ?1",
                 params![job_id, stats.segments, stats.words, stats.speakers],
             )?;
-            if let Some(d) = t.duration.map(Time::as_millis) {
+            if let Some(d) = t.duration.map(MediaLength::as_millis) {
                 tx.execute(
                     "UPDATE jobs SET duration_ms = ?2 WHERE id = ?1 AND duration_ms IS NULL",
                     params![job_id, d],
@@ -552,7 +560,7 @@ fn load_transcript(conn: &Connection, job_id: &str) -> rusqlite::Result<Option<T
     };
     let mut t = Transcript {
         id: transcript_id,
-        duration: duration_ms.map(Time::from_millis),
+        duration: duration_ms.map(MediaLength::from_millis),
         segments: Vec::new(),
         speakers: Vec::new(),
         mode: parse_mode(&mode)?,
@@ -703,7 +711,7 @@ mod tests {
 
     fn simple() -> Transcript {
         let mut t = Transcript::new(EngineStamp::asr("sravaani", "1.0"));
-        t.duration = Some(Time(5_000));
+        t.duration = Some(MediaLength::from_millis(5_000));
         t.segments.push(
             Segment::new(Time(0), Time(1_000))
                 .with_words(vec![Word::new("hello", Time(0), Time(500))])

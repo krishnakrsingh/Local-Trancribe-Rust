@@ -59,7 +59,7 @@ fn mib(bytes: u64) -> f64 {
 /// file sizes the ones a real meeting produces.
 fn meeting() -> vaani_core::Transcript {
     let mut t = fixtures::transcript(0xA6, MEETING_SEGMENTS);
-    t.duration = Some(vaani_core::Time(783_000));
+    t.duration = Some(vaani_core::MediaLength::from_millis(783_000));
     let target_words = MEETING_WORDS;
     let per_segment = target_words / MEETING_SEGMENTS;
     for (i, seg) in t.segments.iter_mut().enumerate() {

@@ -27,7 +27,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use vaani_core::{JobPhase, Segment, Time, Transcript};
+use vaani_core::{JobPhase, MediaLength, Segment, Transcript};
 
 use crate::backend::{
     Choice, ControllerEvent, JobId, JobSummary, SettingsPatch, Severity, SpeakerSummary, Theme,
@@ -593,11 +593,17 @@ impl TranscriptView {
     }
 
     /// Total attributed and unattributed time, for the footer.
+    ///
+    /// A **length**, which is what the footer displays: how much media this
+    /// covers. When the transcript declares none, the inferred length is the
+    /// span of its own first and last segment — an inference, not a
+    /// measurement, and deliberately not the last segment's end, which is a
+    /// position and would be wrong for anything that does not start at zero.
     #[must_use]
-    pub fn duration(&self) -> Option<Time> {
+    pub fn duration(&self) -> Option<MediaLength> {
         self.transcript
             .as_ref()
-            .and_then(|t| t.duration.or_else(|| Some(t.inferred_duration())))
+            .map(|t| t.duration.unwrap_or_else(|| t.inferred_length()))
     }
 
     /// The current selection.

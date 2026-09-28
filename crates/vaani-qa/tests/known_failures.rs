@@ -164,7 +164,16 @@ fn every_tracked_failure_still_reproduces() {
         }
     }
 
-    // --- 4. the ASR stage's coordinate-space violation -----------------------
+    // --- 4. the ASR stage's coordinate-space violation: FIXED ----------------
+    //
+    // This block used to re-drive `times.no_time_precedes_the_origin` and assert
+    // it was still failing. It no longer is, so the entry has been deleted from
+    // `asr_stage_known_failures()` and the check passes outright. Rather than
+    // silently drop the coverage, the check is now asserted as a **Pass**: the
+    // ASR stage is run on the same +5-minute work audio that used to expose the
+    // defect, and it is required to honour the origin. That is a stronger
+    // statement than the old one, because a regression now fails the gate
+    // instead of being absorbed into a KnownFailure.
     {
         let stage = AppStage::new(
             Box::new(AsrStage::new(
@@ -182,17 +191,24 @@ fn every_tracked_failure_still_reproduces() {
             .expect("the coordinate-space check must have run");
         assert_eq!(
             outcome.verdict,
-            Verdict::Known,
-            "the ASR stage's offset-buffer behaviour changed character; if it is now correct, \
-             delete the entry and let the check pass"
-        );
-        assert!(
-            outcome.detail.contains("still failing"),
-            "the ASR stage now honours a non-zero buffer origin; delete the entry from \
+            Verdict::Pass,
+            "the ASR stage has regressed on a non-zero buffer origin. It builds a MediaWindow \
+             from the decoded buffer and must plan and clamp inside it; see \
+             docs/architecture/TIMESTAMP_CONTRACT.md and the entry removed from \
              asr_stage_known_failures(). Detail: {}",
             outcome.detail
         );
-        still_failing += 1;
+        assert!(
+            outcome.detail.contains("0 of"),
+            "the check reports pairs before the origin: {}",
+            outcome.detail
+        );
+        assert!(
+            asr_stage_known_failures().is_empty(),
+            "a new known failure was registered for the ASR stage without a commit that says \
+             why: {:?}",
+            asr_stage_known_failures()
+        );
     }
 
     // --- 5. the ASR engine's missing-model error carries no recovery --------
@@ -231,7 +247,7 @@ fn every_tracked_failure_still_reproduces() {
 
     assert_eq!(
         still_failing,
-        all_known_failures().len() + asr_stage_known_failures().len(),
+        all_known_failures().len(),
         "every registered entry must be re-driven by this test; one of them is not"
     );
 }
