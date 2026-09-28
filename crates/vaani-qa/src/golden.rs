@@ -124,14 +124,20 @@ pub const LOGMEL_REFERENCE_DEVIATION: f64 = 7.99e-5;
 /// Word timings must match the reference exactly: worst deviation 0.0 ms.
 pub const WORD_TIMING_TOLERANCE_SECONDS: f64 = 0.0;
 
-/// The SHA-256 of the committed `decode_golden.json`.
+/// The SHA-256 of the committed `decode_golden.json`, after line-ending
+/// normalisation (see [`file_sha256`]).
 ///
-/// Recorded 2026-09-27. If this fails, the file changed. That is only ever
-/// correct for a deliberate, documented re-export from the reference
-/// implementation — and a re-export must come with a new digest here, or the
-/// guard has done nothing.
+/// Recorded 2026-09-27, re-pinned 2026-09-28: the original pin was the digest
+/// of a CRLF checkout of byte-identical content, so the guard failed on any LF
+/// checkout. Proven, not assumed — the CRLF rendering of the current file
+/// hashes to the old pin exactly, the blob matches the worktree byte for byte
+/// since the foundation commit, and the ASR parity tests verify every value
+/// (202/202 token IDs, 108/108 timings at 0.0 ms, exact text). If this fails,
+/// the file changed. That is only ever allowed with a deliberate re-export
+/// from the reference implementation - and a re-export must come with a new
+/// digest here, or the guard has done nothing.
 pub const DECODE_GOLDEN_SHA256: &str =
-    "c3f5442aa17af4144e4836ef15e028d29911784c07b8719f2953e8b68a64f72b";
+    "a6d870a19c2bf61865423e7328b735e33284bf90bf8cf81854832dc9ae59cc20";
 
 /// The SHA-256 of the committed `frontend_golden.json`.
 pub const FRONTEND_GOLDEN_SHA256: &str =
@@ -218,7 +224,25 @@ pub fn load<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, LoadError>
 ///
 /// Whatever [`std::fs::read`] says.
 pub fn file_sha256(path: &Path) -> std::io::Result<String> {
-    Ok(sha256_hex(&std::fs::read(path)?))
+    // Normalise line endings before hashing. Git checks these fixtures out as
+    // CRLF on Windows (`core.autocrlf`) and LF everywhere else, so a raw-byte
+    // digest pins the checkout style rather than the content — and the guard
+    // then fails on a byte-identical file. What the digest must pin is the
+    // JSON text, so CRLF becomes LF first. A content change still changes the
+    // digest; a line-ending change no longer does.
+    let raw = std::fs::read(path)?;
+    let mut normalised = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i] == b'\r' && raw.get(i + 1) == Some(&b'\n') {
+            normalised.push(b'\n');
+            i += 2;
+        } else {
+            normalised.push(raw[i]);
+            i += 1;
+        }
+    }
+    Ok(sha256_hex(&normalised))
 }
 
 // ---------------------------------------------------------------------------
