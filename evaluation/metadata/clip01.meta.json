@@ -1,0 +1,124 @@
+{
+  "id": "clip01",
+  "topic": "pause-dense-opening",
+  "language_mix": [
+    "hinglish"
+  ],
+  "language_mix_provenance": "documented_context",
+  "speakers": null,
+  "speakers_provenance": "unverified",
+  "difficulty": "moderate",
+  "difficulty_provenance": "unverified",
+  "covers": [
+    "natural-pauses",
+    "short-segments",
+    "speaker-changes",
+    "normal-hindi",
+    "hinglish"
+  ],
+  "rationale": "The most pause-dense 90 s window in the recording: 45 speech runs, 37 gaps of 300 ms or more, 20 pauses of 700 ms or more, longest 2990 ms. Exercises short-segment handling and the pause threshold in the grouping policy.",
+  "structure": {
+    "sample_rate": 16000,
+    "duration_ms": 90000,
+    "speech_fraction": 0.5773974886098455,
+    "speech_runs": 45,
+    "silence_spans": 37,
+    "longest_silence_ms": 2990,
+    "longest_speech_ms": 3840,
+    "notable_pauses": [
+      {
+        "start_ms": 2250,
+        "end_ms": 2970
+      },
+      {
+        "start_ms": 10680,
+        "end_ms": 11500
+      },
+      {
+        "start_ms": 16080,
+        "end_ms": 16980
+      },
+      {
+        "start_ms": 17430,
+        "end_ms": 18480
+      },
+      {
+        "start_ms": 24680,
+        "end_ms": 27190
+      },
+      {
+        "start_ms": 31370,
+        "end_ms": 32200
+      },
+      {
+        "start_ms": 34770,
+        "end_ms": 35900
+      },
+      {
+        "start_ms": 39670,
+        "end_ms": 40930
+      },
+      {
+        "start_ms": 44770,
+        "end_ms": 45500
+      },
+      {
+        "start_ms": 48860,
+        "end_ms": 49720
+      },
+      {
+        "start_ms": 52660,
+        "end_ms": 53530
+      },
+      {
+        "start_ms": 54710,
+        "end_ms": 55540
+      },
+      {
+        "start_ms": 59300,
+        "end_ms": 62290
+      },
+      {
+        "start_ms": 63060,
+        "end_ms": 63900
+      },
+      {
+        "start_ms": 67460,
+        "end_ms": 68180
+      },
+      {
+        "start_ms": 68770,
+        "end_ms": 69960
+      },
+      {
+        "start_ms": 71860,
+        "end_ms": 74110
+      },
+      {
+        "start_ms": 76530,
+        "end_ms": 77280
+      },
+      {
+        "start_ms": 82260,
+        "end_ms": 83400
+      },
+      {
+        "start_ms": 88070,
+        "end_ms": 89530
+      }
+    ],
+    "rms_p05_dbfs": -101.7,
+    "rms_p50_dbfs": -59.6,
+    "rms_p95_dbfs": -14.3,
+    "speech_zcr_median": 1000.0,
+    "noise_floor_dbfs": -96.6,
+    "frame_count": 8999
+  },
+  "annotator_notes": [
+    "Confirm the speaker count. `speakers` is currently unknown and its provenance is `unverified`.",
+    "Confirm the language mix. Nothing in the harness can hear a language.",
+    "Mark any stretch where two people talk over each other. Acoustic energy cannot detect overlap, and the DER a diarizer can reach is bounded by it.",
+    "Note any word the recogniser is likely to mangle: product names, API names, romanised Hindi spelled two ways.",
+    "If you write reference.words.json, time the words to the nearest 10 ms and say so in ANNOTATED.md."
+  ]
+}

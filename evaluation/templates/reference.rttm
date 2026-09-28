@@ -1,0 +1,24 @@
+# NIST RTTM. Ten whitespace-separated fields, decimal SECONDS.
+#   Type FileID ChanID StartTime Duration Ortho Stype Name NoSpeakers Confidence
+#
+#   SPEAKER clip01 1   0.000000  8.400000 <NA> <NA> A <NA> <NA>
+#   SPEAKER clip01 1   8.520000 11.900000 <NA> <NA> B <NA> <NA>
+#
+# Use your own labels. A permutation is resolved before anything is compared,
+# so the harness never compares these strings.
+#
+# Merge adjacent stretches of the same person: two consecutive A records is a
+# speaker change the human did not hear, and it will be counted against the
+# reference.
+#
+# Cover the whole clip. A record that stops at a pause makes the hypothesis
+# look like it is hallucinating through the silence.
+#
+# Record overlap as two records with identical start and end:
+#   SPEAKER clip01 1 47.000000 3.100000 <NA> <NA> A <NA> <NA>
+#   SPEAKER clip01 1 47.000000 3.100000 <NA> <NA> B <NA> <NA>
+# The diarizer emits at most one speaker at a time, so every millisecond of
+# overlap you record is a millisecond of DER it cannot avoid. Omitting it
+# flatters the score for the wrong reason.
+#
+# Leave the silences out entirely. Do not write NOSPEAKER records.

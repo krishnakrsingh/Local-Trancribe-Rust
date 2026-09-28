@@ -1,0 +1,36 @@
+# ---------------------------------------------------------------------------
+# NOTHING IN THIS DIRECTORY MAY CONTAIN A WORD OF THE MEETING.
+#
+# The clips are slices of a real private recording. Three classes of file here
+# can leak its content, and all three are excluded:
+#
+#   clips/        audio of real people saying real things
+#   references/   a human transcript of the above, plus diarization and
+#                 word timings
+#   hypotheses/   what the system thought was said
+#
+# The clips are already covered by the root `.gitignore`'s `*.wav` rule, and
+# that is not enough on its own: a `.wav` rule does not cover a `.txt`. Every
+# rule below is stated explicitly so the exclusions are auditable by reading
+# this file rather than by reasoning about the root one.
+# ---------------------------------------------------------------------------
+
+clips/
+references/
+hypotheses/
+
+# The per-frame acoustic analysis is a dense map of the whole recording. The
+# *summary* of it (counts, dB percentiles, pause positions) is committed in
+# set.json and metadata/; the frames are not.
+**/*.frames.json
+
+# Only aggregate reports are committable. `results/` is ignored wholesale and
+# then re-admitted file by file, so a new artefact type has to be added here on
+# purpose rather than swept in by accident.
+results/*
+!results/summary.json
+!results/*.report.json
+
+# Scratch space for anyone working the set by hand.
+evaluation-scratch/
+*.local.json

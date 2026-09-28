@@ -1,0 +1,87 @@
+{
+  "id": "clip03",
+  "topic": "low-level-far-microphone",
+  "language_mix": [
+    "hinglish"
+  ],
+  "language_mix_provenance": "documented_context",
+  "speakers": null,
+  "speakers_provenance": "unverified",
+  "difficulty": "hard",
+  "difficulty_provenance": "unverified",
+  "covers": [
+    "low-snr",
+    "fast-speech",
+    "technical-terminology",
+    "hinglish"
+  ],
+  "rationale": "Speech 20 dB quieter at the low end than clip01 (5th percentile -94.3 dBFS, floor -49 dBFS against clip01's -40). Exercises the front end on a low-SNR input.",
+  "structure": {
+    "sample_rate": 16000,
+    "duration_ms": 90000,
+    "speech_fraction": 0.6805200577841982,
+    "speech_runs": 52,
+    "silence_spans": 27,
+    "longest_silence_ms": 2520,
+    "longest_speech_ms": 4040,
+    "notable_pauses": [
+      {
+        "start_ms": 16310,
+        "end_ms": 18200
+      },
+      {
+        "start_ms": 18440,
+        "end_ms": 19460
+      },
+      {
+        "start_ms": 31300,
+        "end_ms": 32350
+      },
+      {
+        "start_ms": 38080,
+        "end_ms": 39930
+      },
+      {
+        "start_ms": 40400,
+        "end_ms": 42390
+      },
+      {
+        "start_ms": 44520,
+        "end_ms": 45380
+      },
+      {
+        "start_ms": 63630,
+        "end_ms": 64720
+      },
+      {
+        "start_ms": 64750,
+        "end_ms": 65570
+      },
+      {
+        "start_ms": 68280,
+        "end_ms": 69250
+      },
+      {
+        "start_ms": 70740,
+        "end_ms": 73260
+      },
+      {
+        "start_ms": 81870,
+        "end_ms": 83920
+      }
+    ],
+    "rms_p05_dbfs": -94.3,
+    "rms_p50_dbfs": -42.2,
+    "rms_p95_dbfs": -14.2,
+    "speech_zcr_median": 1050.0,
+    "noise_floor_dbfs": -90.6,
+    "frame_count": 8999
+  },
+  "annotator_notes": [
+    "Confirm the speaker count. `speakers` is currently unknown and its provenance is `unverified`.",
+    "Confirm the language mix. Nothing in the harness can hear a language.",
+    "Mark any stretch where two people talk over each other. Acoustic energy cannot detect overlap, and the DER a diarizer can reach is bounded by it.",
+    "Note any word the recogniser is likely to mangle: product names, API names, romanised Hindi spelled two ways.",
+    "If you write reference.words.json, time the words to the nearest 10 ms and say so in ANNOTATED.md."
+  ]
+}

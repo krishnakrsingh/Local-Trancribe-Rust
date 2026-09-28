@@ -1,0 +1,752 @@
+{
+    "version":  1,
+    "id":  "vaanidesk-meeting-001",
+    "description":  "Eight 90-second clips cut from the private 13.9-minute meeting recording at scratch/clip.wav. Cut boundaries were chosen from measured acoustic structure alone (frame RMS, zero-crossing rate, an adaptive noise floor) so that the set is not selected using the system under test. Zero clips carry a human reference: the clips, the schema and the harness exist, the annotations do not.",
+    "source":  {
+                   "path":  "scratch/clip.wav",
+                   "sha256":  "66214c7f350b355f8cd233a2765c577238299ced17b30ec6d4fb4fcc07aa7372",
+                   "sample_rate":  16000,
+                   "duration_ms":  834197,
+                   "description":  "A real private meeting recording, 13.9 minutes, mono 16 kHz. Never committed, never published, never uploaded. Every clip is a slice of it."
+               },
+    "normalisation_profile":  "strict",
+    "clips":  [
+                  {
+                      "id":  "clip01",
+                      "start_ms":  30000,
+                      "duration_ms":  90000,
+                      "topic":  "pause-dense-opening",
+                      "rationale":  "The most pause-dense 90 s window in the recording: 45 speech runs, 37 gaps of 300 ms or more, 20 pauses of 700 ms or more, longest 2990 ms. Exercises short-segment handling and the pause threshold in the grouping policy.",
+                      "covers":  [
+                                     "natural-pauses",
+                                     "short-segments",
+                                     "speaker-changes",
+                                     "normal-hindi",
+                                     "hinglish"
+                                 ],
+                      "speakers":  null,
+                      "speakers_provenance":  "unverified",
+                      "language_mix":  [
+                                           "hinglish"
+                                       ],
+                      "language_mix_provenance":  "documented_context",
+                      "difficulty":  "moderate",
+                      "difficulty_provenance":  "unverified",
+                      "clip_sha256":  "ad0596c7987d29c2b94d61d2a56ba07aee8af810a8bb84355d699e5945098e2d",
+                      "structure":  {
+                                        "duration_ms":  90000,
+                                        "frame_count":  8999,
+                                        "longest_silence_ms":  2990,
+                                        "longest_speech_ms":  3840,
+                                        "noise_floor_dbfs":  -96.5999984741211,
+                                        "notable_pauses":  [
+                                                               {
+                                                                   "end_ms":  2970,
+                                                                   "start_ms":  2250
+                                                               },
+                                                               {
+                                                                   "end_ms":  11500,
+                                                                   "start_ms":  10680
+                                                               },
+                                                               {
+                                                                   "end_ms":  16980,
+                                                                   "start_ms":  16080
+                                                               },
+                                                               {
+                                                                   "end_ms":  18480,
+                                                                   "start_ms":  17430
+                                                               },
+                                                               {
+                                                                   "end_ms":  27190,
+                                                                   "start_ms":  24680
+                                                               },
+                                                               {
+                                                                   "end_ms":  32200,
+                                                                   "start_ms":  31370
+                                                               },
+                                                               {
+                                                                   "end_ms":  35900,
+                                                                   "start_ms":  34770
+                                                               },
+                                                               {
+                                                                   "end_ms":  40930,
+                                                                   "start_ms":  39670
+                                                               },
+                                                               {
+                                                                   "end_ms":  45500,
+                                                                   "start_ms":  44770
+                                                               },
+                                                               {
+                                                                   "end_ms":  49720,
+                                                                   "start_ms":  48860
+                                                               },
+                                                               {
+                                                                   "end_ms":  53530,
+                                                                   "start_ms":  52660
+                                                               },
+                                                               {
+                                                                   "end_ms":  55540,
+                                                                   "start_ms":  54710
+                                                               },
+                                                               {
+                                                                   "end_ms":  62290,
+                                                                   "start_ms":  59300
+                                                               },
+                                                               {
+                                                                   "end_ms":  63900,
+                                                                   "start_ms":  63060
+                                                               },
+                                                               {
+                                                                   "end_ms":  68180,
+                                                                   "start_ms":  67460
+                                                               },
+                                                               {
+                                                                   "end_ms":  69960,
+                                                                   "start_ms":  68770
+                                                               },
+                                                               {
+                                                                   "end_ms":  74110,
+                                                                   "start_ms":  71860
+                                                               },
+                                                               {
+                                                                   "end_ms":  77280,
+                                                                   "start_ms":  76530
+                                                               },
+                                                               {
+                                                                   "end_ms":  83400,
+                                                                   "start_ms":  82260
+                                                               },
+                                                               {
+                                                                   "end_ms":  89530,
+                                                                   "start_ms":  88070
+                                                               }
+                                                           ],
+                                        "rms_p05_dbfs":  -101.69999694824219,
+                                        "rms_p50_dbfs":  -59.599998474121094,
+                                        "rms_p95_dbfs":  -14.300000190734863,
+                                        "sample_rate":  16000,
+                                        "silence_spans":  37,
+                                        "speech_fraction":  0.5773974886098455,
+                                        "speech_runs":  45,
+                                        "speech_zcr_median":  1000.0
+                                    }
+                  },
+                  {
+                      "id":  "clip02",
+                      "start_ms":  220000,
+                      "duration_ms":  90000,
+                      "topic":  "continuous-fast-speech",
+                      "rationale":  "The densest window: 76.5 percent speech, only 23 gaps, longest 2030 ms, and the highest median level of any clip. Exercises back-to-back decoding and a high word rate.",
+                      "covers":  [
+                                     "fast-speech",
+                                     "continuous-speech",
+                                     "technical-terminology",
+                                     "hinglish",
+                                     "normal-hindi"
+                                 ],
+                      "speakers":  null,
+                      "speakers_provenance":  "unverified",
+                      "language_mix":  [
+                                           "hinglish"
+                                       ],
+                      "language_mix_provenance":  "documented_context",
+                      "difficulty":  "hard",
+                      "difficulty_provenance":  "unverified",
+                      "clip_sha256":  "8887fdc9796deadff80ceebf06a06c47c9a8677e060431da76ab4a59ec11e539",
+                      "structure":  {
+                                        "duration_ms":  90000,
+                                        "frame_count":  8999,
+                                        "longest_silence_ms":  2030,
+                                        "longest_speech_ms":  2490,
+                                        "noise_floor_dbfs":  -69.5,
+                                        "notable_pauses":  [
+                                                               {
+                                                                   "end_ms":  13470,
+                                                                   "start_ms":  12640
+                                                               },
+                                                               {
+                                                                   "end_ms":  15660,
+                                                                   "start_ms":  14900
+                                                               },
+                                                               {
+                                                                   "end_ms":  24750,
+                                                                   "start_ms":  23470
+                                                               },
+                                                               {
+                                                                   "end_ms":  33200,
+                                                                   "start_ms":  32460
+                                                               },
+                                                               {
+                                                                   "end_ms":  35340,
+                                                                   "start_ms":  34610
+                                                               },
+                                                               {
+                                                                   "end_ms":  44960,
+                                                                   "start_ms":  42930
+                                                               },
+                                                               {
+                                                                   "end_ms":  61240,
+                                                                   "start_ms":  59940
+                                                               }
+                                                           ],
+                                        "rms_p05_dbfs":  -92.19999694824219,
+                                        "rms_p50_dbfs":  -30.0,
+                                        "rms_p95_dbfs":  -14.300000190734863,
+                                        "sample_rate":  16000,
+                                        "silence_spans":  23,
+                                        "speech_fraction":  0.7647516390710078,
+                                        "speech_runs":  89,
+                                        "speech_zcr_median":  950.0
+                                    }
+                  },
+                  {
+                      "id":  "clip03",
+                      "start_ms":  300000,
+                      "duration_ms":  90000,
+                      "topic":  "low-level-far-microphone",
+                      "rationale":  "Speech 20 dB quieter at the low end than clip01 (5th percentile -94.3 dBFS, floor -49 dBFS against clip01\u0027s -40). Exercises the front end on a low-SNR input.",
+                      "covers":  [
+                                     "low-snr",
+                                     "fast-speech",
+                                     "technical-terminology",
+                                     "hinglish"
+                                 ],
+                      "speakers":  null,
+                      "speakers_provenance":  "unverified",
+                      "language_mix":  [
+                                           "hinglish"
+                                       ],
+                      "language_mix_provenance":  "documented_context",
+                      "difficulty":  "hard",
+                      "difficulty_provenance":  "unverified",
+                      "clip_sha256":  "c6920eacb719adc036c7a8ffb527e42ca14202653b192380084dd5a676adaa6f",
+                      "structure":  {
+                                        "duration_ms":  90000,
+                                        "frame_count":  8999,
+                                        "longest_silence_ms":  2520,
+                                        "longest_speech_ms":  4040,
+                                        "noise_floor_dbfs":  -90.5999984741211,
+                                        "notable_pauses":  [
+                                                               {
+                                                                   "end_ms":  18200,
+                                                                   "start_ms":  16310
+                                                               },
+                                                               {
+                                                                   "end_ms":  19460,
+                                                                   "start_ms":  18440
+                                                               },
+                                                               {
+                                                                   "end_ms":  32350,
+                                                                   "start_ms":  31300
+                                                               },
+                                                               {
+                                                                   "end_ms":  39930,
+                                                                   "start_ms":  38080
+                                                               },
+                                                               {
+                                                                   "end_ms":  42390,
+                                                                   "start_ms":  40400
+                                                               },
+                                                               {
+                                                                   "end_ms":  45380,
+                                                                   "start_ms":  44520
+                                                               },
+                                                               {
+                                                                   "end_ms":  64720,
+                                                                   "start_ms":  63630
+                                                               },
+                                                               {
+                                                                   "end_ms":  65570,
+                                                                   "start_ms":  64750
+                                                               },
+                                                               {
+                                                                   "end_ms":  69250,
+                                                                   "start_ms":  68280
+                                                               },
+                                                               {
+                                                                   "end_ms":  73260,
+                                                                   "start_ms":  70740
+                                                               },
+                                                               {
+                                                                   "end_ms":  83920,
+                                                                   "start_ms":  81870
+                                                               }
+                                                           ],
+                                        "rms_p05_dbfs":  -94.30000305175781,
+                                        "rms_p50_dbfs":  -42.20000076293945,
+                                        "rms_p95_dbfs":  -14.199999809265137,
+                                        "sample_rate":  16000,
+                                        "silence_spans":  27,
+                                        "speech_fraction":  0.6805200577841982,
+                                        "speech_runs":  52,
+                                        "speech_zcr_median":  1050.0
+                                    }
+                  },
+                  {
+                      "id":  "clip04",
+                      "start_ms":  530000,
+                      "duration_ms":  90000,
+                      "topic":  "longest-silence",
+                      "rationale":  "Contains the single longest silence in the whole recording, 5480 ms, most likely a topic change or a dropout. Exercises the chunk planner across a long non-speech region.",
+                      "covers":  [
+                                     "natural-pauses",
+                                     "long-silence",
+                                     "topic-change",
+                                     "speaker-changes",
+                                     "hinglish"
+                                 ],
+                      "speakers":  null,
+                      "speakers_provenance":  "unverified",
+                      "language_mix":  [
+                                           "hinglish"
+                                       ],
+                      "language_mix_provenance":  "documented_context",
+                      "difficulty":  "moderate",
+                      "difficulty_provenance":  "unverified",
+                      "clip_sha256":  "ff9ce62ce2043dcc2a3547924502bbc7f561f368c26761e1f4adfb9dbbe15953",
+                      "structure":  {
+                                        "duration_ms":  90000,
+                                        "frame_count":  8999,
+                                        "longest_silence_ms":  5480,
+                                        "longest_speech_ms":  4130,
+                                        "noise_floor_dbfs":  -89.30000305175781,
+                                        "notable_pauses":  [
+                                                               {
+                                                                   "end_ms":  5900,
+                                                                   "start_ms":  5180
+                                                               },
+                                                               {
+                                                                   "end_ms":  7860,
+                                                                   "start_ms":  6040
+                                                               },
+                                                               {
+                                                                   "end_ms":  15650,
+                                                                   "start_ms":  14820
+                                                               },
+                                                               {
+                                                                   "end_ms":  30240,
+                                                                   "start_ms":  29430
+                                                               },
+                                                               {
+                                                                   "end_ms":  33740,
+                                                                   "start_ms":  32980
+                                                               },
+                                                               {
+                                                                   "end_ms":  51340,
+                                                                   "start_ms":  45860
+                                                               },
+                                                               {
+                                                                   "end_ms":  79080,
+                                                                   "start_ms":  77600
+                                                               },
+                                                               {
+                                                                   "end_ms":  83080,
+                                                                   "start_ms":  82280
+                                                               },
+                                                               {
+                                                                   "end_ms":  87930,
+                                                                   "start_ms":  87160
+                                                               }
+                                                           ],
+                                        "rms_p05_dbfs":  -95.0999984741211,
+                                        "rms_p50_dbfs":  -33.099998474121094,
+                                        "rms_p95_dbfs":  -14.699999809265137,
+                                        "sample_rate":  16000,
+                                        "silence_spans":  16,
+                                        "speech_fraction":  0.764973885987332,
+                                        "speech_runs":  48,
+                                        "speech_zcr_median":  1000.0
+                                    }
+                  },
+                  {
+                      "id":  "clip05",
+                      "start_ms":  630000,
+                      "duration_ms":  90000,
+                      "topic":  "slowest-articulation",
+                      "rationale":  "The lowest zero-crossing rate over speech frames of any window (900 crossings per second against 1000-1050 elsewhere), i.e. the darkest and slowest-sounding speech in the set. A crude speaking-rate proxy, and labelled as one.",
+                      "covers":  [
+                                     "slow-speech",
+                                     "names",
+                                     "natural-pauses",
+                                     "hinglish"
+                                 ],
+                      "speakers":  null,
+                      "speakers_provenance":  "unverified",
+                      "language_mix":  [
+                                           "hinglish"
+                                       ],
+                      "language_mix_provenance":  "documented_context",
+                      "difficulty":  "moderate",
+                      "difficulty_provenance":  "unverified",
+                      "clip_sha256":  "62271c162f57e4ca8583f653d0fe12b6f03aacb0ee8ef7bf20c481a05d4e08b5",
+                      "structure":  {
+                                        "duration_ms":  90000,
+                                        "frame_count":  8999,
+                                        "longest_silence_ms":  3110,
+                                        "longest_speech_ms":  3240,
+                                        "noise_floor_dbfs":  -87.19999694824219,
+                                        "notable_pauses":  [
+                                                               {
+                                                                   "end_ms":  1610,
+                                                                   "start_ms":  0
+                                                               },
+                                                               {
+                                                                   "end_ms":  12770,
+                                                                   "start_ms":  11870
+                                                               },
+                                                               {
+                                                                   "end_ms":  13940,
+                                                                   "start_ms":  13210
+                                                               },
+                                                               {
+                                                                   "end_ms":  23440,
+                                                                   "start_ms":  20330
+                                                               },
+                                                               {
+                                                                   "end_ms":  43800,
+                                                                   "start_ms":  42930
+                                                               },
+                                                               {
+                                                                   "end_ms":  67450,
+                                                                   "start_ms":  66250
+                                                               },
+                                                               {
+                                                                   "end_ms":  80030,
+                                                                   "start_ms":  78930
+                                                               },
+                                                               {
+                                                                   "end_ms":  88600,
+                                                                   "start_ms":  87520
+                                                               },
+                                                               {
+                                                                   "end_ms":  89990,
+                                                                   "start_ms":  89080
+                                                               }
+                                                           ],
+                                        "rms_p05_dbfs":  -92.9000015258789,
+                                        "rms_p50_dbfs":  -32.20000076293945,
+                                        "rms_p95_dbfs":  -14.699999809265137,
+                                        "sample_rate":  16000,
+                                        "silence_spans":  20,
+                                        "speech_fraction":  0.7431936881875764,
+                                        "speech_runs":  61,
+                                        "speech_zcr_median":  900.0
+                                    }
+                  },
+                  {
+                      "id":  "clip06",
+                      "start_ms":  140000,
+                      "duration_ms":  90000,
+                      "topic":  "longest-single-turn",
+                      "rationale":  "The longest unbroken speech run in the set, 5880 ms, with 36 speech runs over 90 s. The mid-range baseline every other clip is compared against.",
+                      "covers":  [
+                                     "long-turn",
+                                     "speaker-changes",
+                                     "names",
+                                     "hinglish",
+                                     "normal-hindi"
+                                 ],
+                      "speakers":  null,
+                      "speakers_provenance":  "unverified",
+                      "language_mix":  [
+                                           "hinglish"
+                                       ],
+                      "language_mix_provenance":  "documented_context",
+                      "difficulty":  "easy",
+                      "difficulty_provenance":  "unverified",
+                      "clip_sha256":  "29d4678f7a053cff163c40280dd715cee1807bd0a2d70bfd96f01081c3800e88",
+                      "structure":  {
+                                        "duration_ms":  90000,
+                                        "frame_count":  8999,
+                                        "longest_silence_ms":  1830,
+                                        "longest_speech_ms":  5880,
+                                        "noise_floor_dbfs":  -88.5999984741211,
+                                        "notable_pauses":  [
+                                                               {
+                                                                   "end_ms":  710,
+                                                                   "start_ms":  0
+                                                               },
+                                                               {
+                                                                   "end_ms":  12070,
+                                                                   "start_ms":  11180
+                                                               },
+                                                               {
+                                                                   "end_ms":  16150,
+                                                                   "start_ms":  15360
+                                                               },
+                                                               {
+                                                                   "end_ms":  22910,
+                                                                   "start_ms":  21210
+                                                               },
+                                                               {
+                                                                   "end_ms":  34670,
+                                                                   "start_ms":  32840
+                                                               },
+                                                               {
+                                                                   "end_ms":  41170,
+                                                                   "start_ms":  39960
+                                                               },
+                                                               {
+                                                                   "end_ms":  45560,
+                                                                   "start_ms":  44410
+                                                               },
+                                                               {
+                                                                   "end_ms":  49470,
+                                                                   "start_ms":  48420
+                                                               },
+                                                               {
+                                                                   "end_ms":  54640,
+                                                                   "start_ms":  53540
+                                                               },
+                                                               {
+                                                                   "end_ms":  56470,
+                                                                   "start_ms":  54700
+                                                               },
+                                                               {
+                                                                   "end_ms":  64590,
+                                                                   "start_ms":  63360
+                                                               },
+                                                               {
+                                                                   "end_ms":  69970,
+                                                                   "start_ms":  69060
+                                                               },
+                                                               {
+                                                                   "end_ms":  76720,
+                                                                   "start_ms":  75850
+                                                               },
+                                                               {
+                                                                   "end_ms":  79270,
+                                                                   "start_ms":  78470
+                                                               }
+                                                           ],
+                                        "rms_p05_dbfs":  -93.19999694824219,
+                                        "rms_p50_dbfs":  -31.899999618530273,
+                                        "rms_p95_dbfs":  -14.5,
+                                        "sample_rate":  16000,
+                                        "silence_spans":  22,
+                                        "speech_fraction":  0.7500833425936215,
+                                        "speech_runs":  36,
+                                        "speech_zcr_median":  950.0
+                                    }
+                  },
+                  {
+                      "id":  "clip07",
+                      "start_ms":  700000,
+                      "duration_ms":  90000,
+                      "topic":  "softest-speech",
+                      "rationale":  "The softest speech in the set (95th percentile -15.8 dBFS, 1 dB below every other clip) with a 3460 ms gap. Exercises quiet passages and a near-floor noise estimate.",
+                      "covers":  [
+                                     "low-volume",
+                                     "natural-pauses",
+                                     "names",
+                                     "hinglish"
+                                 ],
+                      "speakers":  null,
+                      "speakers_provenance":  "unverified",
+                      "language_mix":  [
+                                           "hinglish"
+                                       ],
+                      "language_mix_provenance":  "documented_context",
+                      "difficulty":  "moderate",
+                      "difficulty_provenance":  "unverified",
+                      "clip_sha256":  "499459ac5d3be93590eab5a5170e7a3f266893f2dd483e1833e54ad04fc3596d",
+                      "structure":  {
+                                        "duration_ms":  90000,
+                                        "frame_count":  8999,
+                                        "longest_silence_ms":  3460,
+                                        "longest_speech_ms":  4430,
+                                        "noise_floor_dbfs":  -89.69999694824219,
+                                        "notable_pauses":  [
+                                                               {
+                                                                   "end_ms":  10030,
+                                                                   "start_ms":  8950
+                                                               },
+                                                               {
+                                                                   "end_ms":  18600,
+                                                                   "start_ms":  17520
+                                                               },
+                                                               {
+                                                                   "end_ms":  20190,
+                                                                   "start_ms":  19080
+                                                               },
+                                                               {
+                                                                   "end_ms":  40130,
+                                                                   "start_ms":  38570
+                                                               },
+                                                               {
+                                                                   "end_ms":  42010,
+                                                                   "start_ms":  40620
+                                                               },
+                                                               {
+                                                                   "end_ms":  44880,
+                                                                   "start_ms":  42040
+                                                               },
+                                                               {
+                                                                   "end_ms":  46170,
+                                                                   "start_ms":  45280
+                                                               },
+                                                               {
+                                                                   "end_ms":  52110,
+                                                                   "start_ms":  51120
+                                                               },
+                                                               {
+                                                                   "end_ms":  54000,
+                                                                   "start_ms":  53120
+                                                               },
+                                                               {
+                                                                   "end_ms":  60300,
+                                                                   "start_ms":  59500
+                                                               },
+                                                               {
+                                                                   "end_ms":  69220,
+                                                                   "start_ms":  65760
+                                                               },
+                                                               {
+                                                                   "end_ms":  75890,
+                                                                   "start_ms":  74690
+                                                               },
+                                                               {
+                                                                   "end_ms":  78100,
+                                                                   "start_ms":  76570
+                                                               },
+                                                               {
+                                                                   "end_ms":  80930,
+                                                                   "start_ms":  80040
+                                                               }
+                                                           ],
+                                        "rms_p05_dbfs":  -94.30000305175781,
+                                        "rms_p50_dbfs":  -45.099998474121094,
+                                        "rms_p95_dbfs":  -15.800000190734863,
+                                        "sample_rate":  16000,
+                                        "silence_spans":  28,
+                                        "speech_fraction":  0.6508500944549395,
+                                        "speech_runs":  50,
+                                        "speech_zcr_median":  950.0
+                                    }
+                  },
+                  {
+                      "id":  "clip08",
+                      "start_ms":  740000,
+                      "duration_ms":  90000,
+                      "topic":  "quiet-tail",
+                      "rationale":  "The quietest and most fragmented window: 47.2 percent speech, 39 gaps of 300 ms or more, 21 pauses of 700 ms or more, and a median level of -85.7 dBFS against -30 to -45 elsewhere. The recording tail, where the VAD has to reject as much as it keeps.",
+                      "covers":  [
+                                     "natural-pauses",
+                                     "low-snr",
+                                     "code-switching",
+                                     "product-terminology",
+                                     "hinglish"
+                                 ],
+                      "speakers":  null,
+                      "speakers_provenance":  "unverified",
+                      "language_mix":  [
+                                           "hinglish"
+                                       ],
+                      "language_mix_provenance":  "documented_context",
+                      "difficulty":  "hard",
+                      "difficulty_provenance":  "unverified",
+                      "clip_sha256":  "4277952aa954ebece3860759cbe88097ee7c7526bd47f83c430a38cf0c529764",
+                      "structure":  {
+                                        "duration_ms":  90000,
+                                        "frame_count":  8999,
+                                        "longest_silence_ms":  3280,
+                                        "longest_speech_ms":  4140,
+                                        "noise_floor_dbfs":  -91.9000015258789,
+                                        "notable_pauses":  [
+                                                               {
+                                                                   "end_ms":  1860,
+                                                                   "start_ms":  620
+                                                               },
+                                                               {
+                                                                   "end_ms":  3030,
+                                                                   "start_ms":  2040
+                                                               },
+                                                               {
+                                                                   "end_ms":  3980,
+                                                                   "start_ms":  3040
+                                                               },
+                                                               {
+                                                                   "end_ms":  4880,
+                                                                   "start_ms":  3990
+                                                               },
+                                                               {
+                                                                   "end_ms":  12100,
+                                                                   "start_ms":  11120
+                                                               },
+                                                               {
+                                                                   "end_ms":  14000,
+                                                                   "start_ms":  13120
+                                                               },
+                                                               {
+                                                                   "end_ms":  29220,
+                                                                   "start_ms":  26190
+                                                               },
+                                                               {
+                                                                   "end_ms":  35890,
+                                                                   "start_ms":  34940
+                                                               },
+                                                               {
+                                                                   "end_ms":  38100,
+                                                                   "start_ms":  36570
+                                                               },
+                                                               {
+                                                                   "end_ms":  40930,
+                                                                   "start_ms":  40050
+                                                               },
+                                                               {
+                                                                   "end_ms":  52260,
+                                                                   "start_ms":  50190
+                                                               },
+                                                               {
+                                                                   "end_ms":  54750,
+                                                                   "start_ms":  52610
+                                                               },
+                                                               {
+                                                                   "end_ms":  57690,
+                                                                   "start_ms":  56650
+                                                               },
+                                                               {
+                                                                   "end_ms":  61430,
+                                                                   "start_ms":  58150
+                                                               },
+                                                               {
+                                                                   "end_ms":  63630,
+                                                                   "start_ms":  61470
+                                                               },
+                                                               {
+                                                                   "end_ms":  66690,
+                                                                   "start_ms":  63650
+                                                               },
+                                                               {
+                                                                   "end_ms":  68230,
+                                                                   "start_ms":  66950
+                                                               },
+                                                               {
+                                                                   "end_ms":  72040,
+                                                                   "start_ms":  70870
+                                                               },
+                                                               {
+                                                                   "end_ms":  72770,
+                                                                   "start_ms":  72050
+                                                               },
+                                                               {
+                                                                   "end_ms":  76600,
+                                                                   "start_ms":  75770
+                                                               },
+                                                               {
+                                                                   "end_ms":  79960,
+                                                                   "start_ms":  78780
+                                                               }
+                                                           ],
+                                        "rms_p05_dbfs":  -95.69999694824219,
+                                        "rms_p50_dbfs":  -85.69999694824219,
+                                        "rms_p95_dbfs":  -16.600000381469727,
+                                        "sample_rate":  16000,
+                                        "silence_spans":  39,
+                                        "speech_fraction":  0.4723858206467385,
+                                        "speech_runs":  39,
+                                        "speech_zcr_median":  950.0
+                                    }
+                  }
+              ]
+}
