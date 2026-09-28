@@ -755,41 +755,78 @@ pub fn check_cancellation_is_prompt(stage: &dyn ConformanceStage) -> Conformance
     let audio = stage.work_audio();
 
     // --- baseline: how long the stage takes when nothing interferes ---------
-    let started = Instant::now();
-    let baseline_result = run_stage(stage, &audio, &CancelToken::new());
-    let baseline_elapsed = started.elapsed();
-    let baseline_worked = baseline_result.is_ok();
+    //
+    // Best of three, not a single sample. Under a full parallel test run a
+    // thread can be descheduled for milliseconds, and a single inflated sample
+    // then reads as "the pre-cancelled run did work" when the machine was
+    // merely busy. The minimum is the right statistic: scheduling noise only
+    // ever inflates a sample, so the fastest of three is closest to the truth.
+    // (Observed in the wild: a no-work run outlasting its baseline under a
+    // 90-binary parallel run, roughly one time in four.)
+    let (baseline_elapsed, baseline_worked) = {
+        let mut best = Duration::MAX;
+        let mut worked = false;
+        for _ in 0..3 {
+            let started = Instant::now();
+            let result = run_stage(stage, &audio, &CancelToken::new());
+            best = best.min(started.elapsed());
+            worked = worked || result.is_ok();
+        }
+        (best, worked)
+    };
 
     // --- pre-cancelled -----------------------------------------------------
+    //
+    // Best of three, for the same reason as the baseline: a single inflated
+    // sample under load reads as "the stage did work". Correctness (every run
+    // returns `Cancelled`) is checked on all three; speed on the minimum.
     {
         let dead = CancelToken::new();
         dead.cancel();
-        let started = Instant::now();
-        let result = run_stage(stage, &audio, &dead);
-        let elapsed = started.elapsed();
-        match &result {
-            Err(e) if e.code() == ErrorCode::Cancelled => {
-                let did_work = baseline_worked && elapsed >= baseline_elapsed;
-                report.record(
-                    "cancellation.pre_cancelled_is_rejected",
-                    !did_work,
-                    format!(
-                        "Cancelled after {:.1} ms against a {:.1} ms clean run (did_work={did_work})",
-                        elapsed.as_secs_f64() * 1000.0,
-                        baseline_elapsed.as_secs_f64() * 1000.0
-                    ),
-                );
+        let mut best = Duration::MAX;
+        let mut all_cancelled = true;
+        let mut last_wrong: Option<String> = None;
+        let mut last_ok = false;
+        for _ in 0..3 {
+            let started = Instant::now();
+            let result = run_stage(stage, &audio, &dead);
+            best = best.min(started.elapsed());
+            match &result {
+                Err(e) if e.code() == ErrorCode::Cancelled => {}
+                Err(e) => {
+                    all_cancelled = false;
+                    last_wrong = Some(format!("wrong code {}: {}", e.code(), e.debug_chain()));
+                }
+                Ok(_) => {
+                    all_cancelled = false;
+                    last_ok = true;
+                }
             }
-            Err(e) => report.record(
+        }
+        let elapsed = best;
+        if all_cancelled {
+            let did_work = baseline_worked && elapsed >= baseline_elapsed;
+            report.record(
                 "cancellation.pre_cancelled_is_rejected",
-                false,
-                format!("wrong code {}: {}", e.code(), e.debug_chain()),
-            ),
-            Ok(_) => report.record(
+                !did_work,
+                format!(
+                    "Cancelled after {:.1} ms against a {:.1} ms clean run (did_work={did_work})",
+                    elapsed.as_secs_f64() * 1000.0,
+                    baseline_elapsed.as_secs_f64() * 1000.0
+                ),
+            );
+        } else if last_ok {
+            report.record(
                 "cancellation.pre_cancelled_is_rejected",
                 false,
                 "a pre-cancelled token produced a result".to_owned(),
-            ),
+            );
+        } else {
+            report.record(
+                "cancellation.pre_cancelled_is_rejected",
+                false,
+                last_wrong.unwrap_or_else(|| "no runs completed".to_owned()),
+            );
         }
     }
 
@@ -798,10 +835,7 @@ pub fn check_cancellation_is_prompt(stage: &dyn ConformanceStage) -> Conformance
         report.record(
             "cancellation.mid_run_is_observed",
             false,
-            format!(
-                "the stage does not run at all on its own work audio ({})",
-                describe(&baseline_result)
-            ),
+            "the stage does not run at all on its own work audio".to_owned(),
         );
         return report;
     }
