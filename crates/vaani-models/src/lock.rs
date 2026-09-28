@@ -138,17 +138,15 @@ pub enum LockError {
 impl LockError {
     /// Project onto the application error taxonomy.
     ///
-    /// There is no "busy" code in `vaani_core::ErrorCode`, and reusing
-    /// `Cancelled` would tell a user they did something they did not do. This
-    /// is reported as `StorageFailed` with a message that names the real
-    /// situation; see `OPEN ISSUES` in the A7 report, which asks the architect
-    /// for a dedicated code.
+    /// A lost install race is `ResourceBusy`, not a storage failure and not a
+    /// cancellation: another window or process holds the model, and waiting or
+    /// closing the other copy fixes it, which neither of the old codes says.
     #[must_use]
     pub fn to_vaani_error(&self) -> vaani_core::VaaniError {
         match self {
             Self::Held { model_id, .. } => {
                 vaani_core::VaaniError::new(vaani_core::UserFacingError::new(
-                    vaani_core::ErrorCode::StorageFailed,
+                    vaani_core::ErrorCode::ResourceBusy,
                     "Already being installed.",
                     format!("{model_id} is already being installed in another window or process."),
                 ))
@@ -451,7 +449,7 @@ mod tests {
         assert!(msg.contains("sravaani"), "{msg}");
         assert!(msg.contains("already being installed"), "{msg}");
         let v = e.to_vaani_error();
-        assert_eq!(v.code(), vaani_core::ErrorCode::StorageFailed);
+        assert_eq!(v.code(), vaani_core::ErrorCode::ResourceBusy);
         assert!(v.user.recovery.is_some());
         assert!(v.to_string().contains("Already being installed"));
     }

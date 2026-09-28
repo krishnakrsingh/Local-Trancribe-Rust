@@ -15,8 +15,9 @@
 //!   by [`an_unknown_model_id_is_a_clean_refusal_with_a_recovery`], which asserts
 //!   the code, the recovery and the message. That test was written as a tripwire
 //!   asserting the *buggy* code (`internal`) so it would fail the day somebody
-//!   fixed it. It has now been reclassified to `model_unavailable`, the tripwire
-//!   fired, and the assertion pins the fixed behaviour.
+//!   fixed it. It has since been reclassified twice — first to
+//!   `model_unavailable`, then to the dedicated `unknown_model` — and the
+//!   assertion pins the fixed behaviour.
 //! * `missing_model_resolves_to_model_unavailable` asserted
 //!   `code == ModelUnavailable || code == Internal`. The disjunction was covering
 //!   the measured behaviour: a *known* model id that is not installed gives
@@ -89,14 +90,13 @@ fn an_unknown_model_id_is_a_clean_refusal_with_a_recovery() {
     let err = manager
         .resolve("no-such-model-xyz")
         .expect_err("an unknown id must be refused");
-    // **Fixed.** This was `ErrorCode::Internal` — "please report this" — for a
-    // caller mistake: a stale settings file, a typo, a database written by a
-    // newer build. `vaani-models` now returns `ModelUnavailable`, whose
-    // recovery tells the user to run `vaani models list`. The tripwire below
-    // fired, which is the only reason this assertion is correct today.
+    // **Fixed, twice.** This was `ErrorCode::Internal` — "please report this" —
+    // for a caller mistake, then `ModelUnavailable`, whose title suggests a
+    // model that exists but is not downloaded. `UnknownModel` now says what it
+    // is: the id is not in the registry. The assertion pins the fixed behaviour.
     assert_eq!(
         err.code(),
-        ErrorCode::ModelUnavailable,
+        ErrorCode::UnknownModel,
         "an unknown model id must be refused as a user-facing condition, not \
          reported as an internal error to file a bug about"
     );
@@ -123,11 +123,9 @@ fn an_unknown_model_has_no_install_plan() {
         !err.is_cancelled(),
         "an unknown model is not a cancellation"
     );
-    assert!(
-        matches!(
-            err.code(),
-            ErrorCode::Internal | ErrorCode::ModelUnavailable
-        ),
+    assert_eq!(
+        err.code(),
+        ErrorCode::UnknownModel,
         "got {}: {}",
         err.code(),
         err.debug_chain()

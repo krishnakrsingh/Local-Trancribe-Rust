@@ -385,7 +385,7 @@ fn two_processes_racing_for_one_model_produce_exactly_one_winner() {
     let loser = outcomes.iter().find(|o| o.verdict == "lost").unwrap();
     assert_eq!(
         loser.code.as_deref(),
-        Some("storage_failed"),
+        Some("resource_busy"),
         "the loser must get a coded refusal, not a crash: {loser:?}"
     );
     assert!(

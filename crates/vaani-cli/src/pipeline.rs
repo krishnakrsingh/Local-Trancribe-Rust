@@ -280,7 +280,11 @@ impl Pipeline for DirectPipeline {
                 .with_language(req.language);
             let result = engine.transcribe(&asr_chunk, cancel)?;
             tracing::debug!(chunk = i, segments = result.segments.len(), "chunk done");
-            transcript.push_chunk(chunk.start, result.segments);
+            transcript.push_chunk_within(
+                chunk.start,
+                result.segments,
+                audio.start_time.saturating_add(audio.duration()),
+            );
         }
         engine.unload();
 
@@ -461,7 +465,11 @@ impl Pipeline for DirectPipeline {
                     let samples = audio.slice_mono(chunk.start, chunk.end);
                     let asr_chunk = vaani_asr::AudioChunk::new(samples, 16_000, chunk.start);
                     let result = engine.transcribe(&asr_chunk, cancel)?;
-                    transcript.push_chunk(chunk.start, result.segments);
+                    transcript.push_chunk_within(
+                        chunk.start,
+                        result.segments,
+                        audio.start_time.saturating_add(audio.duration()),
+                    );
                 }
                 engine.unload();
                 transcript_segments = transcript.segments.len();

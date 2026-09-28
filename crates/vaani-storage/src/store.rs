@@ -432,19 +432,27 @@ impl Store {
             for (id, phase) in pending {
                 // A job that never started was not interrupted mid-work; it was
                 // dropped from a queue that did not survive. `CANCELLED` is
-                // right for that, and `FAILED` for work that was under way.
-                let (to, message) = if phase == "QUEUED" {
-                    ("CANCELLED", "Still waiting to start when VaaniDesk last closed.")
+                // right for that. But work that was under way when the process
+                // died is `INTERRUPTED`, not cancelled: nobody asked for it to
+                // stop and it will not resume, so the job list must not pretend
+                // the user pressed stop.
+                let (to, message, code) = if phase == "QUEUED" {
+                    (
+                        "CANCELLED",
+                        "Still waiting to start when VaaniDesk last closed.",
+                        "cancelled",
+                    )
                 } else {
                     (
                         "FAILED",
                         "VaaniDesk closed while this job was running. Run it again to finish.",
+                        "interrupted",
                     )
                 };
                 tx.execute(
                     "UPDATE jobs SET phase = ?2, finished_at_ms = ?3, error_code = ?4, error_message = ?5
                      WHERE id = ?1",
-                    rusqlite::params![id, to, now, "cancelled", message],
+                    rusqlite::params![id, to, now, code, message],
                 )?;
                 changed.push(id);
             }
@@ -764,9 +772,26 @@ mod tests {
         store.recover_interrupted_jobs().unwrap();
         let job = store.load_job("j").unwrap().unwrap();
         let err = job.error.expect("an interrupted job must carry a reason");
-        assert_eq!(err.code, "cancelled");
+        // `interrupted`, not `cancelled`: nobody pressed stop, the process
+        // died. A job list that calls this "cancelled" is lying.
+        assert_eq!(err.code, "interrupted");
         assert!(err.message.contains("closed while this job was running"));
         assert!(job.finished_at_ms.is_some());
+    }
+
+    #[test]
+    fn recovery_calls_a_never_started_job_cancelled_not_interrupted() {
+        // The counterpart: a job that never started was dropped from a queue,
+        // not killed mid-work, so `cancelled` is still right for it.
+        let dir = TempDir::new("recover-queued");
+        let store = Store::open(dir.join("v.db")).unwrap();
+        let mut rec = crate::JobRecord::new("q", dir.join("a.wav"));
+        rec.phase = vaani_core::JobPhase::Queued;
+        store.upsert_job(&rec).unwrap();
+        store.recover_interrupted_jobs().unwrap();
+        let job = store.load_job("q").unwrap().unwrap();
+        let err = job.error.expect("a recovered job must carry a reason");
+        assert_eq!(err.code, "cancelled");
     }
 
     #[test]

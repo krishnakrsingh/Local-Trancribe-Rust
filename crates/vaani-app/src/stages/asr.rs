@@ -79,10 +79,12 @@ impl PipelineStage for AsrStage {
             }
             let input =
                 AudioChunk::new(samples, sample_rate, chunk.start).with_language(self.language);
-            // The result's times are chunk-local by contract; `push_chunk`
-            // does the one rebasing.
+            // The result's times are chunk-local by contract; `push_chunk_within`
+            // does the one rebasing, clamped to the media so the last frame
+            // cannot land past the end of the recording. The decoded buffer
+            // starts at zero, so `total` is the media end.
             let result = self.engine.transcribe(&input, ctx.cancel)?;
-            transcript.push_chunk(chunk.start, result.segments);
+            transcript.push_chunk_within(chunk.start, result.segments, total);
             ctx.report(
                 JobPhase::Asr,
                 Some((index + 1) as f64 / total_chunks as f64),
