@@ -13,9 +13,10 @@
 //!   It bound `err` and then threw it away. It asserted nothing at all, and its
 //!   `println!` claimed the thing it had not checked. **Deleted.** It is replaced
 //!   by [`an_unknown_model_id_is_a_clean_refusal_with_a_recovery`], which asserts
-//!   the code, the recovery and the message, and which records the fact that the
-//!   code is `internal` — a caller mistake reported as a bug, which is a defect
-//!   in `vaani-models` and is written up in OPEN ISSUES.
+//!   the code, the recovery and the message. That test was written as a tripwire
+//!   asserting the *buggy* code (`internal`) so it would fail the day somebody
+//!   fixed it. It has now been reclassified to `model_unavailable`, the tripwire
+//!   fired, and the assertion pins the fixed behaviour.
 //! * `missing_model_resolves_to_model_unavailable` asserted
 //!   `code == ModelUnavailable || code == Internal`. The disjunction was covering
 //!   the measured behaviour: a *known* model id that is not installed gives
@@ -88,20 +89,16 @@ fn an_unknown_model_id_is_a_clean_refusal_with_a_recovery() {
     let err = manager
         .resolve("no-such-model-xyz")
         .expect_err("an unknown id must be refused");
-    // **Tracked defect, `vaani-models`.** An unknown model id is a caller mistake
-    // (a stale settings file, a typo, a database written by a newer build) and is
-    // reported as `ErrorCode::Internal` with the user-facing text "Something went
-    // wrong. An unexpected internal error occurred. Please report this." A user who
-    // edits a settings file is told to file a bug. Either give it its own code —
-    // JOURNEY.md's open item 5 already asks for two more — or reuse
-    // `ModelUnavailable` with a recovery that lists the ids that do exist.
-    //
-    // Asserted as `Internal` so the day it is reclassified this fails and says so.
+    // **Fixed.** This was `ErrorCode::Internal` — "please report this" — for a
+    // caller mistake: a stale settings file, a typo, a database written by a
+    // newer build. `vaani-models` now returns `ModelUnavailable`, whose
+    // recovery tells the user to run `vaani models list`. The tripwire below
+    // fired, which is the only reason this assertion is correct today.
     assert_eq!(
         err.code(),
-        ErrorCode::Internal,
-        "an unknown model id is now classified as something other than Internal; the tracked \
-         defect in OPEN ISSUES is fixed, so update the code and the write-up"
+        ErrorCode::ModelUnavailable,
+        "an unknown model id must be refused as a user-facing condition, not \
+         reported as an internal error to file a bug about"
     );
     assert!(
         err.user.recovery.is_some(),

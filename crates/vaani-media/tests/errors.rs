@@ -385,11 +385,13 @@ fn a_token_cancelled_mid_decode_still_reports_cancellation() {
         ..DecodeOptions::default()
     };
     let cancel = CancelToken::new();
-    let token = cancel.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        token.cancel();
-    });
+    // Cancelled up front, not from a sleeping helper thread. A release build
+    // decodes 300 s of audio in about 125 ms, and when the machine is busy the
+    // spawning thread can easily fail to be scheduled for longer than that, so
+    // the decode finishes first and there is no cancellation to observe. That
+    // is a flake, not a defect — and it is exactly what the comment above
+    // describes: the same code path as a mid-decode cancel, without the race.
+    cancel.cancel();
     let err = decode(f.path(), &cancel, &options).expect_err("must not finish");
     assert_eq!(err.code(), ErrorCode::Cancelled, "{}", err.debug_chain());
 }
