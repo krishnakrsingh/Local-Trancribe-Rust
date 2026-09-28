@@ -128,11 +128,34 @@ mod tests {
         // cannot return an error.
         let r = RuntimeReport::collect();
         assert!(!r.summary().is_empty());
-        // Either the runtime is present, or we can say precisely what is absent.
-        assert_eq!(
-            r.runtime_present,
-            r.missing_dlls.is_empty() || !r.missing_dlls.is_empty()
-        );
+
+        // The real invariant, in both directions, and neither of them asserts
+        // that a runtime *is* present:
+        //
+        //   `runtime_present` says whether the **core** `onnxruntime.dll` was
+        //   found. `missing_dlls` also lists `onnxruntime_providers_cuda.dll`,
+        //   which is optional: a CPU-only install has a runtime and a
+        //   non-empty `missing_dlls`. So the two are not equal, and the old
+        //   `missing.is_empty() || !missing.is_empty()` was `p || !p` — always
+        //   true — which silently reduced this to `assert!(runtime_present)`
+        //   and therefore failed on precisely the machines the test is named
+        //   for. Three agents hit it independently before it was found.
+        let core_missing = r.missing_dlls.iter().any(|d| d == runtime::ORT_DLL);
+        if r.runtime_present {
+            assert!(
+                !core_missing,
+                "the runtime is reported present but {} is listed as missing: {:?}",
+                runtime::ORT_DLL,
+                r.missing_dlls
+            );
+        } else {
+            assert!(
+                core_missing,
+                "the runtime is reported absent yet {} is not in the missing list: {:?}",
+                runtime::ORT_DLL,
+                r.missing_dlls
+            );
+        }
     }
 
     #[test]
