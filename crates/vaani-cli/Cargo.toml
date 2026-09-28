@@ -21,6 +21,7 @@ vaani-media = { workspace = true }
 vaani-vad = { workspace = true }
 vaani-asr = { workspace = true }
 vaani-diarization = { workspace = true }
+vaani-segment = { workspace = true }
 vaani-storage = { workspace = true }
 vaani-export = { workspace = true }
 vaani-models = { workspace = true }

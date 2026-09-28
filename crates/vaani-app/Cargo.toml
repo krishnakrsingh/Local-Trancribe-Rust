@@ -12,6 +12,7 @@ vaani-core = { workspace = true }
 vaani-media = { workspace = true }
 vaani-vad = { workspace = true }
 vaani-diarization = { workspace = true }
+vaani-segment = { workspace = true }
 vaani-asr = { workspace = true }
 vaani-inference = { workspace = true }
 vaani-storage = { workspace = true }
