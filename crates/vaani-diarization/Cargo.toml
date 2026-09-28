@@ -16,7 +16,26 @@ rustfft = { workspace = true }
 parking_lot = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
+# Added by the Track B diarization investigation: the benchmark harness has to
+# emit machine-readable output, and this is the same workspace dependency every
+# other reporting crate already uses. The library's own types are unchanged --
+# only `bench` (the harness) serialises.
+serde_json = { workspace = true }
 tracing = { workspace = true }
+# **Benchmark only, and off by default.** `vaani-vad` is A3's crate and this
+# crate documents that it must not own speech detection; the `vad-probe` feature
+# exists so the harness can *measure* what the pipeline's real VAD timeline
+# changes about diarization output, without making that dependency part of the
+# shipped product. Nothing in `src/` outside `bench.rs` refers to it.
+vaani-vad = { workspace = true, optional = true }
+
+[features]
+default = []
+# Lets the benchmark harness run `vaani-vad`'s `EnergyVad` over an input and
+# feed the resulting `SpeechTimeline` to `diarize_with_timeline`, which is the
+# path the real pipeline takes. Off by default so the product build is
+# unchanged.
+vad-probe = ["dep:vaani-vad"]
 
 [lints]
 workspace = true
