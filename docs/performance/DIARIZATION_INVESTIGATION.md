@@ -299,6 +299,32 @@ All measured on the 13.9-minute / 834,197 ms recording, 13,347,157 samples at
 16 kHz, 83,419 analysis frames, 781 windows (internal) / 629 windows (external
 VAD timeline). **No accuracy is claimed anywhere.**
 
+### 3.0 What this document assumes, and where a number could move
+
+* **The harness reads the WAV directly.** `scratch/clip.wav` is 32-bit float
+  IEEE, mono, and its samples **peak at 1.280** — above full scale. The harness
+  applies no normalisation and no clamping. The product path decodes through
+  `vaani-media` first, and if that stage scales or clips, the harness's window
+  population is not bit-identical to the product's. Every *structural* conclusion
+  here is invariant to a constant gain (the per-block shares, the weight
+  invariance, the 1.53× threshold plateau, the pitch continuum), but the absolute
+  **speaker count** could differ by one. This is the single largest caveat on the
+  headline number and it is resolvable in an afternoon by running the harness on a
+  `vaani-media`-decoded buffer.
+* **One recording.** Every § 3 finding is from one file. § 7 names this.
+* **`vaani-vad`'s numbers are its own.** The 0.52 frame-level speech fraction
+  quoted in § 5.4 comes from `VadStats`' documentation and from
+  `active_frame_ratio` as the harness measures it, not from a separate run with
+  A3's cooperation.
+* **Timings are single-machine, release, and one box.** Wall times varied by
+  ~40 % between runs on the same input under different machine load; the
+  *proportions* (`features_ms` share) were stable, the absolute numbers were not.
+  The committed report used `--repeats 3` and reports the last run.
+* **"Speakers" is what the engine claims.** Where this document says the count is
+  wrong it means wrong *relative to a generator's known speaker count* on a
+  fixture, or wrong relative to the internal detector on the real clip. It never
+  means "we know the meeting had N people", because nobody has annotated it.
+
 ### 3.1 The speaker count is 3 or 2 depending on which VAD runs, and that is the reported 2
 
 | activity source | speakers | spans | **speaker changes** | coverage | talk share | windows | window keep ratio |
