@@ -53,6 +53,17 @@
 //! | [`attribution`] | mapping spans onto `Transcript` segments | the signal |
 //! | [`engine`] | the `DiarizationEngine` impl and the pipeline | — |
 //! | [`synth`] | synthetic voices and turn timelines | the engine |
+//! | [`bench`] | the JSON benchmark harness and its label-free diagnostics | the product |
+//! | [`wav`] | a minimal RIFF reader, for probes only | everything |
+//!
+//! ## The benchmark
+//!
+//! `cargo run -p vaani-diarization --release --bin vaani-diar-bench -- --all`
+//! produces one JSON document of **structure and timing**: speaker count, spans,
+//! speaker changes, wall time, RTF and the per-stage breakdown. It reports **no
+//! accuracy for any real recording**, because this repository has no annotated
+//! reference for real audio; the only scored cases are generated ones, whose
+//! reference is the generator's own per-frame labels. See [`bench`].
 //!
 //! ## The two contracts that matter
 //!
@@ -107,6 +118,7 @@
 #![warn(missing_docs)]
 
 pub mod attribution;
+pub mod bench;
 pub mod cluster;
 pub mod config;
 pub mod dsp;
@@ -117,12 +129,14 @@ pub mod features;
 pub mod smooth;
 pub mod synth;
 pub mod vad;
+pub mod wav;
 
 pub use attribution::{
     AttributionReport, apply, assert_consistent, attribute_segment, attribute_speakers,
     majority_margin, majority_speaker, overlap_vote, registered_speaker_count,
     speakers_from_diarization,
 };
+pub use bench::{BenchOptions, BenchReport};
 pub use cluster::{
     ClusterOutcome, Dendrogram, agglomerate, cluster, complete_link_distance, partition_at,
 };

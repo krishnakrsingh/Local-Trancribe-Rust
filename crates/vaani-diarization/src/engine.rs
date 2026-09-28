@@ -679,9 +679,31 @@ impl HeuristicDiarizer {
     /// for tests and for the tuning example; the product calls [`DiarizationEngine::diarize`]
     /// and never this, because a per-window view is not something a transcript
     /// can display.
+    ///
+    /// The built-in activity detector is used; see
+    /// [`debug_windows_with_timeline`] for the external-timeline form.
     pub fn debug_windows(
         &self,
         audio: &AudioBuffer,
+        cancel: &CancelToken,
+    ) -> Result<Vec<LabelledWindow>> {
+        self.debug_windows_with_timeline(audio, None, cancel)
+    }
+
+    /// [`debug_windows`], with an optional external `SpeechTimeline`.
+    ///
+    /// `debug_windows` always uses the built-in activity detector, which is not
+    /// the path the product takes: `vaani-app`'s `DiarStage` hands the VAD
+    /// stage's timeline to `diarize_with_timeline`. Measuring the feature
+    /// geometry therefore has to be possible under *both* activity sources, and
+    /// a window dump that silently used the internal detector would report a
+    /// geometry for an input the product never forms.
+    ///
+    /// `None` is exactly [`debug_windows`].
+    pub fn debug_windows_with_timeline(
+        &self,
+        audio: &AudioBuffer,
+        timeline: Option<&SpeechTimeline>,
         cancel: &CancelToken,
     ) -> Result<Vec<LabelledWindow>> {
         let cfg = self.config.clone();
@@ -697,16 +719,21 @@ impl HeuristicDiarizer {
         let usable = fe.usable_frames(audio.samples.len());
         let n = usable.len();
 
-        let frames = vad::scan(
-            &mut fe,
-            &audio.samples,
-            || self.is_cancelled(cancel),
-            |_| {},
-            poll,
-        );
-        let thresholds = vad::derive_thresholds(&frames, &cfg.activity);
-        let mask = vad::activity_mask(&frames, &thresholds);
-        let timeline = vad::mask_to_timeline(&mask, frame_ms, start_ms, &cfg.activity);
+        let timeline = match timeline {
+            Some(tl) => tl.clone(),
+            None => {
+                let frames = vad::scan(
+                    &mut fe,
+                    &audio.samples,
+                    || self.is_cancelled(cancel),
+                    |_| {},
+                    poll,
+                );
+                let thresholds = vad::derive_thresholds(&frames, &cfg.activity);
+                let mask = vad::activity_mask(&frames, &thresholds);
+                vad::mask_to_timeline(&mask, frame_ms, start_ms, &cfg.activity)
+            }
+        };
 
         let mut active = vec![false; n];
         let mut seg = 0usize;
