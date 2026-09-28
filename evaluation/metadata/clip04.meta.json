@@ -1,0 +1,80 @@
+{
+  "id": "clip04",
+  "topic": "longest-silence",
+  "language_mix": [
+    "hinglish"
+  ],
+  "language_mix_provenance": "documented_context",
+  "speakers": null,
+  "speakers_provenance": "unverified",
+  "difficulty": "moderate",
+  "difficulty_provenance": "unverified",
+  "covers": [
+    "natural-pauses",
+    "long-silence",
+    "topic-change",
+    "speaker-changes",
+    "hinglish"
+  ],
+  "rationale": "Contains the single longest silence in the whole recording, 5480 ms, most likely a topic change or a dropout. Exercises the chunk planner across a long non-speech region.",
+  "structure": {
+    "sample_rate": 16000,
+    "duration_ms": 90000,
+    "speech_fraction": 0.764973885987332,
+    "speech_runs": 48,
+    "silence_spans": 16,
+    "longest_silence_ms": 5480,
+    "longest_speech_ms": 4130,
+    "notable_pauses": [
+      {
+        "start_ms": 5180,
+        "end_ms": 5900
+      },
+      {
+        "start_ms": 6040,
+        "end_ms": 7860
+      },
+      {
+        "start_ms": 14820,
+        "end_ms": 15650
+      },
+      {
+        "start_ms": 29430,
+        "end_ms": 30240
+      },
+      {
+        "start_ms": 32980,
+        "end_ms": 33740
+      },
+      {
+        "start_ms": 45860,
+        "end_ms": 51340
+      },
+      {
+        "start_ms": 77600,
+        "end_ms": 79080
+      },
+      {
+        "start_ms": 82280,
+        "end_ms": 83080
+      },
+      {
+        "start_ms": 87160,
+        "end_ms": 87930
+      }
+    ],
+    "rms_p05_dbfs": -95.1,
+    "rms_p50_dbfs": -33.1,
+    "rms_p95_dbfs": -14.7,
+    "speech_zcr_median": 1000.0,
+    "noise_floor_dbfs": -89.3,
+    "frame_count": 8999
+  },
+  "annotator_notes": [
+    "Confirm the speaker count. `speakers` is currently unknown and its provenance is `unverified`.",
+    "Confirm the language mix. Nothing in the harness can hear a language.",
+    "Mark any stretch where two people talk over each other. Acoustic energy cannot detect overlap, and the DER a diarizer can reach is bounded by it.",
+    "Note any word the recogniser is likely to mangle: product names, API names, romanised Hindi spelled two ways.",
+    "If you write reference.words.json, time the words to the nearest 10 ms and say so in ANNOTATED.md."
+  ]
+}

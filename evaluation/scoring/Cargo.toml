@@ -1,0 +1,51 @@
+[workspace]
+# This crate is deliberately its own workspace root.
+#
+# The VaaniDesk root `Cargo.toml` is architect-owned and Track C may not edit it,
+# so `evaluation/scoring` cannot be added to `members`. Declaring `[workspace]`
+# here makes this a standalone workspace: `cargo build --manifest-path
+# evaluation/scoring/Cargo.toml` works, it keeps its own `Cargo.lock`, and it
+# cannot perturb the lockfile the other eleven crates share. Registering it as a
+# member is a one-line architect change if the team wants it in the main gate --
+# see INTEGRATION NOTES.
+members = []
+
+[package]
+name = "vaani-eval"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "VaaniDesk accuracy evaluation harness: WER/CER, DER/JER and timestamp scoring, kept strictly separate"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "vaani-eval"
+path = "src/main.rs"
+
+[lib]
+name = "vaani_eval"
+path = "src/lib.rs"
+
+# No third-party runtime, no network, no Python, no model.
+#
+#   serde/serde_json  parse the transcript export the system already emits, and
+#                     write the machine-readable report. Already vendored by the
+#                     main workspace, so `--offline` resolves them from the
+#                     local cargo cache with no new download.
+#   unicode-segmentation
+#                     grapheme-cluster counting for CER. Without it a Devanagari
+#                     character is counted as 2-3 scalars and CER for Hindi is
+#                     inflated by a factor that has nothing to do with accuracy.
+#                     Present in the local registry cache.
+#   sha2              content hashes of the source recording, the clips and the
+#                     reference files. A score that cannot name the bytes it was
+#                     computed from is not reproducible. Present in the cache.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+unicode-segmentation = "1"
+sha2 = "0.10"
+
+[profile.release]
+opt-level = 2

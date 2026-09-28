@@ -1,0 +1,16 @@
+# One utterance per line. Only the words.
+# No timestamps, no speaker labels, no punctuation, no blank lines.
+#
+# Rules that change your score are in evaluation/ANNOTATION.md. The three that
+# people get wrong most often:
+#
+#   * write the SCRIPT the speaker used -- "API integrate करना है", not
+#     "एपीआई इंटीग्रेट करना है"
+#   * write what was PRONOUNCED -- the product name as said, not as the
+#     marketing spells it
+#   * keep fillers and repetitions, and write [inaudible] for a word you
+#     cannot recover rather than guessing it
+#
+# Then check what the normaliser will actually score:
+#   vaani-eval norm --in references\<id>\reference.txt \
+#                   --out references\<id>\reference.normalised.txt

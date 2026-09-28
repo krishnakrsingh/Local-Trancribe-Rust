@@ -1,0 +1,99 @@
+{
+  "id": "clip07",
+  "topic": "softest-speech",
+  "language_mix": [
+    "hinglish"
+  ],
+  "language_mix_provenance": "documented_context",
+  "speakers": null,
+  "speakers_provenance": "unverified",
+  "difficulty": "moderate",
+  "difficulty_provenance": "unverified",
+  "covers": [
+    "low-volume",
+    "natural-pauses",
+    "names",
+    "hinglish"
+  ],
+  "rationale": "The softest speech in the set (95th percentile -15.8 dBFS, 1 dB below every other clip) with a 3460 ms gap. Exercises quiet passages and a near-floor noise estimate.",
+  "structure": {
+    "sample_rate": 16000,
+    "duration_ms": 90000,
+    "speech_fraction": 0.6508500944549395,
+    "speech_runs": 50,
+    "silence_spans": 28,
+    "longest_silence_ms": 3460,
+    "longest_speech_ms": 4430,
+    "notable_pauses": [
+      {
+        "start_ms": 8950,
+        "end_ms": 10030
+      },
+      {
+        "start_ms": 17520,
+        "end_ms": 18600
+      },
+      {
+        "start_ms": 19080,
+        "end_ms": 20190
+      },
+      {
+        "start_ms": 38570,
+        "end_ms": 40130
+      },
+      {
+        "start_ms": 40620,
+        "end_ms": 42010
+      },
+      {
+        "start_ms": 42040,
+        "end_ms": 44880
+      },
+      {
+        "start_ms": 45280,
+        "end_ms": 46170
+      },
+      {
+        "start_ms": 51120,
+        "end_ms": 52110
+      },
+      {
+        "start_ms": 53120,
+        "end_ms": 54000
+      },
+      {
+        "start_ms": 59500,
+        "end_ms": 60300
+      },
+      {
+        "start_ms": 65760,
+        "end_ms": 69220
+      },
+      {
+        "start_ms": 74690,
+        "end_ms": 75890
+      },
+      {
+        "start_ms": 76570,
+        "end_ms": 78100
+      },
+      {
+        "start_ms": 80040,
+        "end_ms": 80930
+      }
+    ],
+    "rms_p05_dbfs": -94.3,
+    "rms_p50_dbfs": -45.1,
+    "rms_p95_dbfs": -15.8,
+    "speech_zcr_median": 950.0,
+    "noise_floor_dbfs": -89.7,
+    "frame_count": 8999
+  },
+  "annotator_notes": [
+    "Confirm the speaker count. `speakers` is currently unknown and its provenance is `unverified`.",
+    "Confirm the language mix. Nothing in the harness can hear a language.",
+    "Mark any stretch where two people talk over each other. Acoustic energy cannot detect overlap, and the DER a diarizer can reach is bounded by it.",
+    "Note any word the recogniser is likely to mangle: product names, API names, romanised Hindi spelled two ways.",
+    "If you write reference.words.json, time the words to the nearest 10 ms and say so in ANNOTATED.md."
+  ]
+}

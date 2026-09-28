@@ -1,0 +1,72 @@
+{
+  "id": "clip02",
+  "topic": "continuous-fast-speech",
+  "language_mix": [
+    "hinglish"
+  ],
+  "language_mix_provenance": "documented_context",
+  "speakers": null,
+  "speakers_provenance": "unverified",
+  "difficulty": "hard",
+  "difficulty_provenance": "unverified",
+  "covers": [
+    "fast-speech",
+    "continuous-speech",
+    "technical-terminology",
+    "hinglish",
+    "normal-hindi"
+  ],
+  "rationale": "The densest window: 76.5 percent speech, only 23 gaps, longest 2030 ms, and the highest median level of any clip. Exercises back-to-back decoding and a high word rate.",
+  "structure": {
+    "sample_rate": 16000,
+    "duration_ms": 90000,
+    "speech_fraction": 0.7647516390710078,
+    "speech_runs": 89,
+    "silence_spans": 23,
+    "longest_silence_ms": 2030,
+    "longest_speech_ms": 2490,
+    "notable_pauses": [
+      {
+        "start_ms": 12640,
+        "end_ms": 13470
+      },
+      {
+        "start_ms": 14900,
+        "end_ms": 15660
+      },
+      {
+        "start_ms": 23470,
+        "end_ms": 24750
+      },
+      {
+        "start_ms": 32460,
+        "end_ms": 33200
+      },
+      {
+        "start_ms": 34610,
+        "end_ms": 35340
+      },
+      {
+        "start_ms": 42930,
+        "end_ms": 44960
+      },
+      {
+        "start_ms": 59940,
+        "end_ms": 61240
+      }
+    ],
+    "rms_p05_dbfs": -92.2,
+    "rms_p50_dbfs": -30.0,
+    "rms_p95_dbfs": -14.3,
+    "speech_zcr_median": 950.0,
+    "noise_floor_dbfs": -69.5,
+    "frame_count": 8999
+  },
+  "annotator_notes": [
+    "Confirm the speaker count. `speakers` is currently unknown and its provenance is `unverified`.",
+    "Confirm the language mix. Nothing in the harness can hear a language.",
+    "Mark any stretch where two people talk over each other. Acoustic energy cannot detect overlap, and the DER a diarizer can reach is bounded by it.",
+    "Note any word the recogniser is likely to mangle: product names, API names, romanised Hindi spelled two ways.",
+    "If you write reference.words.json, time the words to the nearest 10 ms and say so in ANNOTATED.md."
+  ]
+}

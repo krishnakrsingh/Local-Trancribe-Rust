@@ -1,0 +1,100 @@
+{
+  "id": "clip06",
+  "topic": "longest-single-turn",
+  "language_mix": [
+    "hinglish"
+  ],
+  "language_mix_provenance": "documented_context",
+  "speakers": null,
+  "speakers_provenance": "unverified",
+  "difficulty": "easy",
+  "difficulty_provenance": "unverified",
+  "covers": [
+    "long-turn",
+    "speaker-changes",
+    "names",
+    "hinglish",
+    "normal-hindi"
+  ],
+  "rationale": "The longest unbroken speech run in the set, 5880 ms, with 36 speech runs over 90 s. The mid-range baseline every other clip is compared against.",
+  "structure": {
+    "sample_rate": 16000,
+    "duration_ms": 90000,
+    "speech_fraction": 0.7500833425936215,
+    "speech_runs": 36,
+    "silence_spans": 22,
+    "longest_silence_ms": 1830,
+    "longest_speech_ms": 5880,
+    "notable_pauses": [
+      {
+        "start_ms": 0,
+        "end_ms": 710
+      },
+      {
+        "start_ms": 11180,
+        "end_ms": 12070
+      },
+      {
+        "start_ms": 15360,
+        "end_ms": 16150
+      },
+      {
+        "start_ms": 21210,
+        "end_ms": 22910
+      },
+      {
+        "start_ms": 32840,
+        "end_ms": 34670
+      },
+      {
+        "start_ms": 39960,
+        "end_ms": 41170
+      },
+      {
+        "start_ms": 44410,
+        "end_ms": 45560
+      },
+      {
+        "start_ms": 48420,
+        "end_ms": 49470
+      },
+      {
+        "start_ms": 53540,
+        "end_ms": 54640
+      },
+      {
+        "start_ms": 54700,
+        "end_ms": 56470
+      },
+      {
+        "start_ms": 63360,
+        "end_ms": 64590
+      },
+      {
+        "start_ms": 69060,
+        "end_ms": 69970
+      },
+      {
+        "start_ms": 75850,
+        "end_ms": 76720
+      },
+      {
+        "start_ms": 78470,
+        "end_ms": 79270
+      }
+    ],
+    "rms_p05_dbfs": -93.2,
+    "rms_p50_dbfs": -31.9,
+    "rms_p95_dbfs": -14.5,
+    "speech_zcr_median": 950.0,
+    "noise_floor_dbfs": -88.6,
+    "frame_count": 8999
+  },
+  "annotator_notes": [
+    "Confirm the speaker count. `speakers` is currently unknown and its provenance is `unverified`.",
+    "Confirm the language mix. Nothing in the harness can hear a language.",
+    "Mark any stretch where two people talk over each other. Acoustic energy cannot detect overlap, and the DER a diarizer can reach is bounded by it.",
+    "Note any word the recogniser is likely to mangle: product names, API names, romanised Hindi spelled two ways.",
+    "If you write reference.words.json, time the words to the nearest 10 ms and say so in ANNOTATED.md."
+  ]
+}

@@ -1,0 +1,200 @@
+{
+  "clip_id": "clip03",
+  "source_start_ms": 300000,
+  "duration_ms": 90000,
+  "has_human_asr_reference": false,
+  "has_human_diarization_reference": false,
+  "has_human_word_timing_reference": false,
+  "has_hypothesis": true,
+  "scored": false,
+  "asr": {
+    "status": "unscored",
+    "reason": "no_human_asr_reference",
+    "detail": "no reference.txt accompanied by ANNOTATED.md; nobody has listened to this clip and written down what was said"
+  },
+  "diarization": {
+    "status": "unscored",
+    "reason": "no_human_diarization_reference",
+    "detail": "DER needs a reference.rttm that a person wrote while listening; without one there is no measurement, only the system's own opinion of how many speakers it heard"
+  },
+  "timing": {
+    "status": "unscored",
+    "reason": "no_word_timing_reference",
+    "detail": "timestamp error needs reference.words.json: an orthographic reference carries no word times, and inventing them from the hypothesis would measure the system against itself"
+  },
+  "intrinsic": {
+    "word_count": 192,
+    "segment_count": 24,
+    "speaker_count": 2,
+    "unattributed_segments": 0,
+    "non_monotonic_word_pairs": 0,
+    "negative_duration_words": 0,
+    "adjacent_duplicate_words": 4,
+    "duplicate_runs": 4,
+    "duration_ms": 90000
+  },
+  "taxonomy": [
+    {
+      "id": "asr.duplicated_word",
+      "class": "asr",
+      "status": "measured",
+      "count": 4,
+      "unit": "contiguous runs of >= 2 adjacent identical normalised words",
+      "threshold": null,
+      "note": ""
+    },
+    {
+      "id": "asr.punctuation_error",
+      "class": "asr",
+      "status": "measured",
+      "count": 0,
+      "unit": "hypothesis words that are pure punctuation; the normaliser deletes these, so WER is blind to them and this counter is the only thing that sees them",
+      "threshold": null,
+      "note": ""
+    },
+    {
+      "id": "asr.code_switch_boundary_error",
+      "class": "asr",
+      "status": "measured",
+      "count": 0,
+      "unit": "hypothesis words mixing Devanagari and Latin in one token",
+      "threshold": null,
+      "note": ""
+    },
+    {
+      "id": "asr.hallucinated_word",
+      "class": "asr",
+      "status": "unavailable",
+      "count": null,
+      "unit": "hypothesis tokens with no aligned reference token",
+      "threshold": null,
+      "note": "no human reference for this clip"
+    },
+    {
+      "id": "asr.omitted_word",
+      "class": "asr",
+      "status": "unavailable",
+      "count": null,
+      "unit": "reference tokens with no aligned reference",
+      "threshold": null,
+      "note": "no human reference for this clip"
+    },
+    {
+      "id": "asr.substituted_word",
+      "class": "asr",
+      "status": "unavailable",
+      "count": null,
+      "unit": "aligned pairs whose two tokens differ",
+      "threshold": null,
+      "note": "no human reference for this clip"
+    },
+    {
+      "id": "asr.hallucinated_word_proxy",
+      "class": "asr",
+      "status": "proxy",
+      "count": 4,
+      "unit": "adjacent identical hypothesis word pairs",
+      "threshold": null,
+      "note": "a repeat is what a decoding loop looks like, but a genuinely repeated word is indistinguishable from one; it is a candidate count, not a hallucination count"
+    },
+    {
+      "id": "asr.named_entity_error",
+      "class": "asr",
+      "status": "unavailable",
+      "count": null,
+      "unit": "aligned name tokens that differ",
+      "threshold": null,
+      "note": "needs a human reference AND evaluation/metadata/entities.txt listing the names that matter; the list does not exist yet, so this category is documented but not measured"
+    },
+    {
+      "id": "diarization.speaker_merge",
+      "class": "diarization",
+      "status": "unavailable",
+      "count": null,
+      "unit": "reference speakers mapped onto one hypothesis label",
+      "threshold": null,
+      "note": "no human diarization reference for this clip"
+    },
+    {
+      "id": "diarization.speaker_split",
+      "class": "diarization",
+      "status": "unavailable",
+      "count": null,
+      "unit": "hypothesis labels beyond the reference count",
+      "threshold": null,
+      "note": "no human diarization reference for this clip"
+    },
+    {
+      "id": "diarization.overlap_failure",
+      "class": "diarization",
+      "status": "unavailable",
+      "count": null,
+      "unit": "milliseconds of reference overlap",
+      "threshold": null,
+      "note": "no human diarization reference for this clip"
+    },
+    {
+      "id": "diarization.wrong_speaker",
+      "class": "diarization",
+      "status": "unavailable",
+      "count": null,
+      "unit": "milliseconds of confusion",
+      "threshold": null,
+      "note": "no human diarization reference for this clip"
+    },
+    {
+      "id": "diarization.missed_turn",
+      "class": "diarization",
+      "status": "unavailable",
+      "count": null,
+      "unit": "milliseconds of missed detection",
+      "threshold": null,
+      "note": "no human diarization reference for this clip"
+    },
+    {
+      "id": "diarization.false_turn",
+      "class": "diarization",
+      "status": "unavailable",
+      "count": null,
+      "unit": "milliseconds of false alarm",
+      "threshold": null,
+      "note": "no human diarization reference for this clip"
+    },
+    {
+      "id": "timing.segment_shifted",
+      "class": "timing",
+      "status": "unavailable",
+      "count": null,
+      "unit": "aligned words starting past the shift threshold",
+      "threshold": null,
+      "note": "no human word-timing reference for this clip"
+    },
+    {
+      "id": "timing.word_timestamp_drift",
+      "class": "timing",
+      "status": "unavailable",
+      "count": null,
+      "unit": "aligned words starting past the drift threshold",
+      "threshold": null,
+      "note": "no human word-timing reference for this clip"
+    },
+    {
+      "id": "timing.segment_too_long",
+      "class": "timing",
+      "status": "unavailable",
+      "count": null,
+      "unit": "aligned words whose span exceeds the long ratio",
+      "threshold": null,
+      "note": "no human word-timing reference for this clip"
+    },
+    {
+      "id": "timing.segment_too_short",
+      "class": "timing",
+      "status": "unavailable",
+      "count": null,
+      "unit": "aligned words whose span falls below the short ratio",
+      "threshold": null,
+      "note": "no human word-timing reference for this clip"
+    }
+  ]
+}
