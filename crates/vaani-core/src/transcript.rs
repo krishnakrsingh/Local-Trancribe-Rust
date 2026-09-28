@@ -348,10 +348,47 @@ impl Transcript {
     /// overlapping chunks can produce a slightly out-of-order first segment, so
     /// we insert rather than push. For a typical meeting this is a single
     /// binary-search insertion per chunk, not a sort.
-    pub fn push_chunk(&mut self, chunk_offset: Time, mut segments: Vec<Segment>) {
+    pub fn push_chunk(&mut self, chunk_offset: Time, segments: Vec<Segment>) {
+        self.push_chunk_inner(chunk_offset, segments, None);
+    }
+
+    /// Like [`push_chunk`](Self::push_chunk), but no time may exceed
+    /// `media_end`.
+    ///
+    /// The last STFT frame legitimately extends past the audio — measured on a
+    /// real 834.197 s recording, whose last word ended at 834.220 s — and
+    /// without a media duration to clamp against there is nowhere correct for
+    /// it to go. Callers that know the media length (the decoded buffer does)
+    /// should prefer this; the rebasing, ordering and zero-clamp are identical,
+    /// only the upper bound is new.
+    pub fn push_chunk_within(
+        &mut self,
+        chunk_offset: Time,
+        segments: Vec<Segment>,
+        media_end: Time,
+    ) {
+        self.push_chunk_inner(chunk_offset, segments, Some(media_end));
+    }
+
+    fn push_chunk_inner(
+        &mut self,
+        chunk_offset: Time,
+        mut segments: Vec<Segment>,
+        media_end: Option<Time>,
+    ) {
         for s in &mut segments {
             s.start = s.start.saturating_add(chunk_offset).clamp_zero();
             s.end = s.end.saturating_add(chunk_offset).clamp_zero();
+            if let Some(end) = media_end {
+                // Clamp to the media before repairing degenerates, so the
+                // repair below cannot push an end back past the media.
+                if s.start > end {
+                    s.start = end;
+                }
+                if s.end > end {
+                    s.end = end;
+                }
+            }
             // A word that ends before it starts would produce a negative
             // duration and a malformed SRT cue. Clamp rather than drop: the
             // word was recognised, it just has a degenerate time span.
@@ -361,6 +398,14 @@ impl Transcript {
             for w in &mut s.words {
                 w.start = w.start.saturating_add(chunk_offset).clamp_zero();
                 w.end = w.end.saturating_add(chunk_offset).clamp_zero();
+                if let Some(end) = media_end {
+                    if w.start > end {
+                        w.start = end;
+                    }
+                    if w.end > end {
+                        w.end = end;
+                    }
+                }
                 if w.end < w.start {
                     w.end = w.start;
                 }
@@ -590,6 +635,43 @@ mod tests {
         let mut sorted = starts.clone();
         sorted.sort_unstable();
         assert_eq!(starts, sorted, "segments must stay time-ordered");
+    }
+
+    #[test]
+    fn push_chunk_within_clamps_the_last_frame_to_the_media() {
+        // The measured case: a real 834.197 s recording whose last word ended
+        // at 834.220 s, because the final STFT frame extends past the audio.
+        let mut t = Transcript::new(EngineStamp::asr("test", "1"));
+        t.push_chunk_within(
+            Time(834_000),
+            vec![seg(0, 500, &[("last", 0, 220)])],
+            Time(834_197),
+        );
+        assert_eq!(t.segments[0].end, Time(834_197));
+        assert_eq!(t.segments[0].words[0].end, Time(834_197));
+        // Nothing before the bound moved.
+        assert_eq!(t.segments[0].start, Time(834_000));
+        assert_eq!(t.segments[0].words[0].start, Time(834_000));
+    }
+
+    #[test]
+    fn push_chunk_within_repairs_a_clamp_made_degenerate() {
+        // A segment entirely past the media collapses to zero length at the
+        // boundary rather than surviving outside it. The clamp runs first so
+        // the repair cannot push the end back out.
+        let mut t = Transcript::new(EngineStamp::asr("test", "1"));
+        t.push_chunk_within(Time(0), vec![seg(11_000, 12_000, &[])], Time(10_000));
+        assert_eq!(t.segments[0].start, Time(10_000));
+        assert_eq!(t.segments[0].end, Time(10_000));
+    }
+
+    #[test]
+    fn push_chunk_without_a_bound_is_unchanged() {
+        // The unbounded path must behave exactly as before, or every existing
+        // caller changes meaning. A segment past any plausible media survives.
+        let mut t = Transcript::new(EngineStamp::asr("test", "1"));
+        t.push_chunk(Time(0), vec![seg(0, 2_000_000, &[("x", 0, 2_000_000)])]);
+        assert_eq!(t.segments[0].end, Time(2_000_000));
     }
 
     #[test]

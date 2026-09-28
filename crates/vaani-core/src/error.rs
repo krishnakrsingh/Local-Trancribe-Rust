@@ -88,6 +88,10 @@ pub enum ErrorCode {
     AudioDecodeFailed,
     /// The file has no audio stream at all.
     NoAudioStream,
+    /// A model id that is not in the registry: a typo, a stale settings file,
+    /// or a database written by a newer build. A caller mistake, not a bug —
+    /// `Internal` tells the user to file a report about their own typo.
+    UnknownModel,
     /// A model is not present on disk and offline mode forbids fetching it.
     ModelUnavailable,
     /// Model present but failed its checksum.
@@ -115,10 +119,18 @@ pub enum ErrorCode {
     ExportFailed,
     /// Database failure.
     StorageFailed,
+    /// The resource is busy: another install holds the lock, or a model file
+    /// is open in another process. Waiting or closing the other copy fixes it,
+    /// which neither "storage failed" nor "cancelled" says.
+    ResourceBusy,
     /// A network request failed.
     NetworkFailed,
     /// The user (or a setting) cancelled the operation.
     Cancelled,
+    /// The process died mid-job: a crash, a kill, a power cut. Not a
+    /// cancellation — nobody asked for it and it will not resume — so it gets
+    /// its own code rather than masquerading as one in the job list.
+    Interrupted,
     /// Anything we have not classified yet.
     Internal,
 }
@@ -130,6 +142,7 @@ impl ErrorCode {
             Self::UnsupportedMedia => "unsupported_media",
             Self::AudioDecodeFailed => "audio_decode_failed",
             Self::NoAudioStream => "no_audio_stream",
+            Self::UnknownModel => "unknown_model",
             Self::ModelUnavailable => "model_unavailable",
             Self::ModelCorrupt => "model_corrupt",
             Self::ModelLoadFailed => "model_load_failed",
@@ -143,8 +156,10 @@ impl ErrorCode {
             Self::StructuringFailed => "structuring_failed",
             Self::ExportFailed => "export_failed",
             Self::StorageFailed => "storage_failed",
+            Self::ResourceBusy => "resource_busy",
             Self::NetworkFailed => "network_failed",
             Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
             Self::Internal => "internal",
         }
     }
@@ -317,6 +332,12 @@ pub mod err {
         "The speech recognition model has not been downloaded on this computer yet."
     );
     ctor!(
+        /// The requested model id is not in the registry.
+        unknown_model, UnknownModel, "Unknown model.",
+        "There is no model with that name. It may be a typo, or a setting left \
+         over from a newer version."
+    );
+    ctor!(
         /// A model file is present but its checksum does not match the registry.
         model_corrupt, ModelCorrupt, "Model files are incomplete or damaged.",
         "The downloaded model does not match its expected checksum. It was most \
@@ -387,6 +408,12 @@ pub mod err {
          folder exists and is writable."
     );
     ctor!(
+        /// The resource is busy in another window or process.
+        resource_busy, ResourceBusy, "Already in use.",
+        "Another copy of VaaniDesk is using this right now. Wait for it to \
+         finish, or close the other window, then try again."
+    );
+    ctor!(
         /// A network request failed.
         network_failed, NetworkFailed, "Network request failed.",
         "The request could not be completed. Check your internet connection and \
@@ -405,6 +432,17 @@ pub mod err {
             ErrorCode::Cancelled,
             "Cancelled.",
             "The job was cancelled before it finished.",
+        ))
+    }
+
+    /// The process died mid-job. Distinct from [`cancelled`](Self::cancelled):
+    /// nobody asked for this and it will not resume, so the job list must not
+    /// pretend otherwise.
+    pub fn interrupted() -> VaaniError {
+        VaaniError::new(UserFacingError::new(
+            ErrorCode::Interrupted,
+            "Interrupted.",
+            "VaaniDesk closed while this job was running. Run it again to finish.",
         ))
     }
 }
@@ -504,5 +542,30 @@ mod tests {
     fn cancellation_is_distinguishable() {
         assert!(err::cancelled().is_cancelled());
         assert!(!err::internal().is_cancelled());
+    }
+
+    #[test]
+    fn the_new_codes_have_stable_strings_and_meanings() {
+        // The three codes three agents asked for. Each pins the string that is
+        // persisted in the database and exported in JSON.
+        assert_eq!(ErrorCode::Interrupted.as_str(), "interrupted");
+        assert_eq!(ErrorCode::ResourceBusy.as_str(), "resource_busy");
+        assert_eq!(ErrorCode::UnknownModel.as_str(), "unknown_model");
+        // An interrupted job is a failure that can be retried, not a
+        // cancellation the user asked for. Widening `is_cancelled` to include
+        // it would silently stop retries.
+        assert!(!err::interrupted().is_cancelled());
+        assert!(!err::resource_busy().is_cancelled());
+        assert!(!err::unknown_model().is_cancelled());
+        // Every new code carries a title a user can act on, not "report this".
+        for e in [
+            err::interrupted(),
+            err::resource_busy(),
+            err::unknown_model(),
+        ] {
+            assert!(!e.user.title.is_empty());
+            assert!(!e.user.detail.is_empty());
+            assert_ne!(e.code(), ErrorCode::Internal);
+        }
     }
 }
