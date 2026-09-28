@@ -264,10 +264,22 @@ mod tests {
     fn peak_rss_probe_does_not_panic() {
         let bytes = peak_rss_bytes();
         let mb = peak_rss_mb();
-        assert!(mb >= 0.0);
-        // The two views must agree with each other.
+        assert!(mb.is_finite() && mb >= 0.0);
+        // The two views must agree with each other. Not with 1e-9, though:
+        // peak working set is a *live* measurement and grows between the two
+        // calls as this test allocates, so an exact comparison fails
+        // intermittently depending on what else is running. A megabyte of
+        // slack is generous for two adjacent reads and still tight enough to
+        // catch a wrong divisor, which is the bug this was written for.
         match bytes {
-            Some(b) => assert!((mb - b as f64 / 1_048_576.0).abs() < 1e-9),
+            Some(b) => {
+                let expected = b as f64 / 1_048_576.0;
+                assert!(
+                    (mb - expected).abs() < 1.0,
+                    "peak_rss_mb() gave {mb}, peak_rss_bytes() gave {b} \
+                     ({expected} MiB) - the conversion is not a plain division by 1 MiB"
+                );
+            }
             None => assert_eq!(mb, 0.0),
         }
     }
