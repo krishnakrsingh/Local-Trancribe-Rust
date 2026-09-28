@@ -1,0 +1,58 @@
+MIT License
+
+Copyright (c) 2026 ARTPARK-IISc — SPIRE Lab, ARTPARK, and the Indian
+Institute of Science, Bangalore, and the SraVaani 1.0 authors.
+All rights reserved.
+
+SraVaani 1.0 — a multilingual (65 Indian languages and dialects) automatic
+speech recognition model.
+Source: https://huggingface.co/ARTPARK-IISc/SraVaani-1.0
+
+The files distributed as `models/sravaani/` in this VaaniDesk release are ONNX
+graphs produced by VaaniDesk's own `scripts/export_sravaani_onnx.py` from the
+upstream TorchScript checkpoint `model-asr.fp16.ts` at revision f5dd5358. They
+are a derivative work of the model above, made by this project for its own use
+and redistributed under the terms below.
+
+--------------------------------------------------------------------------
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--------------------------------------------------------------------------
+
+PROVENANCE NOTE — please read before redistributing this file further.
+
+The upstream repository states its licence in the model card's YAML front
+matter (`license: mit`), which Hugging Face renders as "License: mit", and the
+publisher's own announcement describes the model as being "freely and publicly
+available on Hugging Face under an MIT licence". It does **not** publish a
+LICENSE file: the repository tree at revision f5dd5358 contains eleven files and
+none of them is a licence. The copyright holder and year have therefore never
+been stated by the publisher in machine-readable form.
+
+The notice above is the standard MIT text, with the copyright line attributed
+to the authors the model card, the paper and the publisher's own announcements
+name. It is reproduced here so that this distribution satisfies the MIT
+condition that the notice travels with the copies, and it is our
+understanding — not a publisher's statement — that it does.
+
+Before a public or commercial release of VaaniDesk, the architect should
+confirm the attribution with the authors (vaanicontact@gmail.com,
+agneedh@artpark.in) and replace the copyright line above with whatever they
+state. See the project's OPEN ISSUES.

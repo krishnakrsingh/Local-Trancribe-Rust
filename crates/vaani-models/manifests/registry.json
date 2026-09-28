@@ -9,9 +9,10 @@
       "dir": "sravaani",
       "version": "1.0",
       "display_name": "SraVaani 1.0",
-      "description": "The speech recognition model VaaniDesk runs. 65 Indian languages, a FastConformer encoder and a hybrid TDT/RNNT decoder, exported to ONNX by scripts/export_sravaani_onnx.py. The whole install is 2.5 GiB on disk, of which 887 MB is the encoder the app actually loads.",
+      "description": "The speech recognition model VaaniDesk runs, and the one it ships with. 65 Indian languages, a FastConformer encoder and a hybrid TDT/RNNT decoder, exported to ONNX by scripts/export_sravaani_onnx.py. Installed: 887 MB, which is the fp16 encoder (845 MiB), the fp32 decoder, the SentencePiece tokenizer, the mel filterbank and window, and the config.",
       "task": "asr",
       "architecture": "fastconformer-tdt-rnnt",
+      "bundled": true,
       "architecture_params": {
         "enc_d_model": "1024",
         "feat_in": "128",
@@ -34,8 +35,7 @@
         "repo": "ARTPARK-IISc/SraVaani-1.0",
         "revision": "main",
         "homepage": "https://huggingface.co/ARTPARK-IISc/SraVaani-1.0"
-      },
-      "languages": [
+      },      "languages": [
         "hi",
         "en"
       ],

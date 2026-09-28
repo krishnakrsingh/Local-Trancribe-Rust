@@ -95,6 +95,7 @@ that happened to parse" is how a model ships without a licence.
 | `task` | yes | `asr`, `vad` or `diarization` |
 | `architecture` | yes | slug, e.g. `fastconformer-tdt-rnnt` |
 | `architecture_params` | no | free-form `{"enc_d_model": "1024", …}` |
+| `bundled` | no | `true` when the distribution ships this model's files. Defaults to `false`. See below. |
 | `access` | yes | `open`, `gated-token` or `request-access` |
 | `license` | yes | `{spdx, name, url}`; `url` must be `http(s)` |
 | `source` | yes | see below |
@@ -106,6 +107,32 @@ that happened to parse" is how a model ships without a licence.
 | `runtime` | no | `opset`, `onnxruntime`, `cudnn`, `cuda_redist` |
 | `files` | yes | at least one, at least one of them `required` |
 
+### `bundled` and `access` are different questions
+
+`bundled: true` means **the application distribution ships this model's files**,
+under `<app>/models/<dir>/`. `access` means what obtaining them **from the
+publisher** requires. SraVaani is both, and both facts are true at once:
+
+| | |
+|---|---|
+| `bundled: true` | `models/sravaani/` is in the installer. A first-run user needs no network, no account and no token. |
+| `access: "gated-token"` | the upstream Hugging Face repository is click-through-gated. If a user deletes `models/`, the download that restores it needs a token. |
+
+Recording only one of the two is how a settings panel ends up saying "needs a
+Hugging Face token" next to a model already on the user's disk. With `bundled`
+set, the model picker suppresses the credential prompt and, for an installed
+model, the download affordance entirely — see `ModelStatus::bundled` in
+`src/manager.rs`, which is what A5's UI should key off. `Choice` is deliberately
+unchanged at four fields; the same information reaches the picker through
+`Choice::detail`.
+
+**A bundled model must still be downloadable.** `"bundled": true` together with
+`"source": {"kind": "bundled"}` is refused (`ManifestError::IncoherentBundle`).
+`install` short-circuits while the bundle is intact, so the download path only
+runs once somebody has deleted `models/` — and a manifest that cannot describe
+that recovery has a recovery nobody has ever run. The reverse is fine: an
+unbundled `open` model is an ordinary entry.
+
 ### `source`
 
 | `kind` | required | URL built from |
@@ -113,7 +140,7 @@ that happened to parse" is how a model ships without a licence.
 | `huggingface` | `repo` as `org/name` | `https://huggingface.co/{repo}/resolve/{revision}/{path}` |
 | `github-releases` | `url_template` | the template, with `{path}` substituted |
 | `direct` | `url_template` | the template, with `{path}` substituted |
-| `bundled` | nothing | no URL: there is nothing to download |
+| `bundled` | nothing | no URL: there is nothing to download. Legal only when `bundled` is `false`. |
 
 `revision` defaults to `main`. A `huggingface` source needs a bearer token for
 every request, and the token is sent **only** to `huggingface.co` — never
@@ -137,6 +164,14 @@ fp16 graph can be compared against its own reference. Marking it optional is wha
 stops discovery reporting a perfectly good install as broken — and it is why it
 must not be deleted either.
 
+It is also why the **distribution does not ship it.** The bundle is the seven
+required files, 929,977,857 bytes; the full export is 2,702,792,388. Carrying the
+reference encoder would make the download 2.9× larger for a file no runtime path
+opens, so `scripts/release/make-release.ps1` stages only the required set
+(`-IncludeOptional` is the explicit opt-in). `scripts/a12/verify-install.ps1`
+checks the optional file is *absent* in a default build, so a distribution that
+quietly grew by 1.65 GiB is caught rather than shipped.
+
 ## TOML also works
 
 The format is sniffed from the first non-whitespace character. TOML is supported
@@ -148,13 +183,39 @@ both and validates them identically.
 
 | order | root | on Windows |
 |---|---|---|
-| 1 | user | `%LOCALAPPDATA%\VaaniDesk\models` |
-| 2 | bundled | the dev/export `artifacts/` tree |
+| 1 | bundled | `<app>/models/` — beside the executable, i.e. what the installer staged |
+| 2 | user | `%LOCALAPPDATA%\VaaniDesk\models` |
 | 3 | configured | `VAANI_MODEL_DIRS`, `;`-separated |
 
-A model is at `<root>/<dir>/<file.path>`. Downloads always go to the **user**
-root; `artifacts/` belongs to `scripts/export_sravaani_onnx.py` and is read-only
-in an installed app.
+A model is at `<root>/<dir>/<file.path>`.
+
+**Bundled is first**, which reverses A7's original user-first order. The shipped
+copy is the one this build staged and hashed; a copy in app data is one nothing
+has checked the version of, so an upgrade must not be shadowed by whatever an
+older build downloaded. User is *second*, not removed — a user who downloads a
+model on a build with no bundle still gets it.
+
+**Downloads always go to the user root**, unchanged by that reversal, because the
+bundled tree is under `Program Files` on a machine-wide install and a standard
+user cannot write to it.
+
+### How the bundled root itself is resolved
+
+`vaani_models::paths::bundled_candidates` is the single, ordered, testable
+function; `default_bundled_dir` returns the first entry that exists, and an
+explicit override wins outright even if it does not.
+
+| # | location | when |
+|---|---|---|
+| 1 | `VAANI_ARTIFACTS_ROOT` | always wins, exists or not |
+| 2 | parent of `VAANI_ARTEFACTS` | ditto; the model directory `vaani-asr` spells |
+| 3 | `<exe dir>/models/` | the installed distribution |
+| 4 | `<exe dir>/../models/` | a portable ZIP whose executables are in `bin/` |
+| 5 | the path in `<exe dir>/portable.txt` | a portable install with the weights on another volume |
+| 6 | `<repo>/artifacts/` | the developer checkout, found by walking up from the executable and then from `CARGO_MANIFEST_DIR` |
+
+The current working directory is deliberately never consulted: a user launching
+`vaani` from `C:\` must still find its models.
 
 | variable | effect |
 |---|---|

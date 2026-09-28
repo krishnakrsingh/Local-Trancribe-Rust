@@ -133,8 +133,26 @@ impl DiscoveredModel {
     }
 
     /// Bytes an install would still have to fetch.
+    ///
+    /// **Required files only.** This used to sum every file in the directory,
+    /// which meant an install with all seven of `SraVaani`'s required files and
+    /// none of its three optional ones reported 192 bytes outstanding — a
+    /// settings panel offering to download 192 bytes of a model that was
+    /// already complete. It also disagreed with
+    /// [`ModelManager::install_plan_with`](crate::manager::ModelManager::install_plan_with),
+    /// which has always counted only required files, so the "x to download" in
+    /// the picker and the "x to download" in the confirmation dialog were
+    /// different numbers on the same model.
+    ///
+    /// Optional files are still measured and still reported as
+    /// [`FileState::is_present`](FileState) `== false`; they are simply not
+    /// something an install owes anybody.
     pub fn bytes_outstanding(&self) -> u64 {
-        self.files.iter().map(FileState::bytes_outstanding).sum()
+        self.files
+            .iter()
+            .filter(|f| f.required)
+            .map(FileState::bytes_outstanding)
+            .sum()
     }
 
     /// Whether this directory looks like a half-finished install rather than a
@@ -589,7 +607,10 @@ mod tests {
     }
 
     #[test]
-    fn the_user_root_wins_over_the_bundled_one() {
+    fn the_bundled_root_wins_over_the_user_one() {
+        // Reversed from A7's original order by the zero-token mandate. The
+        // shipped copy is the one this build staged and hashed; a copy in app
+        // data is the one nothing has checked the version of. See paths.rs.
         let base = scratch("prec");
         for r in ["user", "bundled"] {
             let m = base.join(r).join("m1");
@@ -597,8 +618,21 @@ mod tests {
             write(&m, "fe/b.bin", 20);
         }
         let d = discover(&fixture(), &root(&base));
+        assert_eq!(d.best("m1").unwrap().root_kind, RootKind::Bundled);
+        assert_eq!(d.copies("m1").len(), 2, "both copies are still listed");
+    }
+
+    #[test]
+    fn a_user_root_copy_is_used_when_there_is_no_bundle() {
+        // The other half of the reversal: user second means it is still found
+        // when nothing is shipped, so a user who downloads a model on a build
+        // with no bundle is not left with nothing.
+        let base = scratch("prec-user");
+        let m = base.join("user").join("m1");
+        write(&m, "a.bin", 10);
+        write(&m, "fe/b.bin", 20);
+        let d = discover(&fixture(), &root(&base));
         assert_eq!(d.best("m1").unwrap().root_kind, RootKind::User);
-        assert_eq!(d.copies("m1").len(), 2);
     }
 
     #[test]
