@@ -180,9 +180,9 @@ listed here is a bug.
 
 ## 7. Known residual ambiguity (deliberate, not forgotten)
 
-Three places still carry a **length in a `Time`**. Each is recorded here
-because each is blocked by a crate boundary this change was not permitted to
-cross, and each is a compile-clean, documented hole rather than an accident.
+Five things are still not perfectly typed. Each is recorded here because each is
+blocked by a crate boundary this change was not permitted to cross, and each is
+a compile-clean, documented hole rather than an accident.
 
 1. **`AudioBuffer::duration() -> Time`** (`vaani-core/src/media.rs`). It is a
    length and it is typed as a position. Changing it to `MediaLength` breaks
@@ -205,14 +205,15 @@ cross, and each is a compile-clean, documented hole rather than an accident.
    not touch. Any future `AudioChunk` change is an ASR-frozen change.
 
 4. **`Chunker::plan(&timeline, media_end: Time)`** keeps a `Time` parameter
-   because it *is* an absolute end, and thirty call sites in `vaani-vad` and
-   `vaani-qa` would have to move to `plan_within`. The parameter has been
-   renamed from `total` to `media_end` and documented, and both production call
-   sites (`vaani-app`, `vaani-cli`) now use `plan_within`. The old entry point
-   remains so the other crates compile, and a caller reading the signature now
-   sees `media_end` rather than a name that invited the length. **Remaining
-   step:** delete `plan`/`plan_with_raw` and cascade, in a commit that can also
-   delete the `vaani-vad` test call sites.
+   because it *is* an absolute end, and 31 `plan` call sites (mostly
+   `vaani-vad`'s own tests) plus 2 `plan_with_raw` and 3 `iter` sites would have
+   to move to the window form. The parameter has been renamed from `total` to
+   `media_end` and documented, and both production call sites (`vaani-app`,
+   `vaani-cli`) now use `plan_within`. The old entry point remains so the other
+   crates compile, and a caller reading the signature now sees `media_end` rather
+   than a name that invited the length. **Remaining step:** delete
+   `plan`/`plan_with_raw` and cascade, in a commit that can also delete the
+   `vaani-vad` and `vaani-qa` test call sites.
 
 5. **`Time::saturating_sub(Time) -> Time`** returns a *span*, not a position.
    It is used by `AudioBuffer::slice_mono` to produce chunk-local offsets, which
