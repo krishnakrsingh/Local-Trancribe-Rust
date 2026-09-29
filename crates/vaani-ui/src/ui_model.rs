@@ -160,9 +160,21 @@ impl TranscriptLayout {
             let chars = segment.text().chars().count();
             // Round up, and never report zero: an empty-looking row cannot be
             // clicked and a zero-height row cannot be scrolled to.
-            let lines = chars
+            //
+            // Plus one for the header line. Every row renders timestamp and
+            // speaker above the text, and that header occupies a full line
+            // height whether or not the text wraps. Counting only text lines
+            // made every row one line short, so each bled into the next and
+            // the whole pane rendered as overlapping mush — most visibly on
+            // real transcripts, where every segment has a speaker. A row with
+            // no header (unattributed, no match) wastes one line height of
+            // whitespace; that is the safe direction, and the Slint side
+            // gives the text `line-count - 1` lines so the header cannot steal
+            // one from it.
+            let text_lines = chars
                 .div_ceil(chars_per_line)
-                .clamp(1, usize::from(MAX_LINES_PER_SEGMENT));
+                .clamp(1, usize::from(MAX_LINES_PER_SEGMENT) - 1);
+            let lines = (1 + text_lines).min(usize::from(MAX_LINES_PER_SEGMENT));
             self.lines
                 .push(u16::try_from(lines).unwrap_or(MAX_LINES_PER_SEGMENT));
             self.total += u32::from(self.lines[self.lines.len() - 1]);
@@ -2045,6 +2057,27 @@ mod tests {
         )];
         let layout = TranscriptLayout::build(Some(&t), 40);
         assert_eq!(layout.line_count(0), MAX_LINES_PER_SEGMENT);
+    }
+
+    #[test]
+    fn every_row_reserves_its_header_line() {
+        // Every rendered row shows timestamp and speaker above the text, and
+        // that header occupies a full line height. Counting only text lines
+        // made each row one line short so all of them bled into each other —
+        // the overlapping-transcript bug. A one-word segment needs two lines
+        // (header plus its word), never one.
+        let mut t = crate::sample::sample_transcript(10, 0);
+        t.segments[0].words = vec![Word::new(
+            "hello",
+            vaani_core::Time(0),
+            vaani_core::Time(500),
+        )];
+        let layout = TranscriptLayout::build(Some(&t), 80);
+        assert_eq!(
+            layout.line_count(0),
+            2,
+            "one header line plus one text line, not one line total"
+        );
     }
 
     #[test]

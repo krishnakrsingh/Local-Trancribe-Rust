@@ -578,11 +578,12 @@ component TranscriptRowView inherits Rectangle {
             text: root.data.text;
             color: root.data.is-unattributed ? VaaniColors.ink-dim : VaaniColors.ink;
             font-size: 13px;
-            // Wrapped, never clipped. A row the windowing arithmetic guessed
-            // short elides, and the detail pane below holds the full text, so
-            // a long segment is always readable.
+            // Wrapped, never clipped. `line-count` includes the header line
+            // above, so the text gets the remainder; a row the windowing
+            // arithmetic guessed short elides, and the detail pane below
+            // holds the full text, so a long segment is always readable.
             wrap: word-wrap;
-            max-lines: root.data.line-count;
+            max-lines: Math.max(1, root.data.line-count - 1);
             overflow: elide;
             horizontal-stretch: 1;
         }
