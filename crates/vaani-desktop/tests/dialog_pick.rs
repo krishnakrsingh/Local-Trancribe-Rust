@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 use vaani_desktop::host::filedialog;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    BM_CLICK, EnumChildWindows, EnumWindows, GetWindowTextLengthW, GetWindowTextW,
-    SendMessageW, WM_SETTEXT,
+    BM_CLICK, EnumChildWindows, EnumWindows, GetWindowTextLengthW, GetWindowTextW, SendMessageW,
+    WM_SETTEXT,
 };
 
 fn window_text(hwnd: HWND) -> String {
