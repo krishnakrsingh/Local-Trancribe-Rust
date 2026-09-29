@@ -93,16 +93,35 @@ fn the_window_drives_a_real_transcription() {
     model.enqueue();
 
     // 2. Pump the way the 33 ms timer does, until the job completes.
+    // Sample the rendered progress and the rendered transcript on every pump: a
+    // bar that never moves is the "no progress" complaint, and a transcript
+    // pane that stays empty until the end is the "no streaming" one. Only a
+    // time series proves either way.
     let deadline = Instant::now() + Duration::from_secs(600);
     let mut terminal_phase = None;
+    let mut overall_samples = Vec::new();
+    let mut last_overall_text = String::new();
+    // (elapsed ms, transcript rows rendered) taken while the job still ran.
+    let mut streamed: Vec<(u128, i32)> = Vec::new();
+    let started = Instant::now();
     while Instant::now() < deadline {
         model.pump();
         let jobs = model.job_list();
-        if let Some(first) = jobs.jobs().first().filter(|j| j.phase.is_terminal()) {
-            terminal_phase = Some(first.phase);
-            break;
+        if let Some(first) = jobs.jobs().first() {
+            overall_samples.push(first.overall);
+            if first.phase.is_terminal() {
+                terminal_phase = Some(first.phase);
+                break;
+            }
+            // Still running: whatever the pane holds now streamed in mid-run.
+            streamed.push((
+                started.elapsed().as_millis(),
+                session.window.get_transcript_rows_total(),
+            ));
         }
         drop(jobs);
+        // The rendered bar value, not just Rust state.
+        last_overall_text = session.window.get_overall_text().to_string();
         std::thread::sleep(Duration::from_millis(200));
     }
     assert_eq!(
@@ -111,6 +130,43 @@ fn the_window_drives_a_real_transcription() {
         "the UI-driven job must complete"
     );
     println!("ok  UI-driven job reached Complete");
+    // The bar must have moved: at least one sample strictly between 0 and 1,
+    // and the final text must not be empty. A bar stuck at 0, at None, or at
+    // 100% for the whole run is a progress display that never progresses.
+    let moved = overall_samples
+        .iter()
+        .flatten()
+        .any(|&f| f > 0.0 && f < 1.0);
+    assert!(
+        moved,
+        "progress must move during the job; samples: {:?} rendered as {:?}",
+        &overall_samples[..overall_samples.len().min(10)],
+        last_overall_text,
+    );
+    println!("ok  progress moved; final text: {last_overall_text}");
+    // The transcript must fill in while the job runs, not appear all at once
+    // when it ends. Two things prove that: rows present before the terminal
+    // event, and their count still climbing afterwards.
+    let during = |upto: u128| {
+        streamed
+            .iter()
+            .filter(|(t, _)| *t <= upto)
+            .map(|(_, rows)| *rows)
+            .max()
+            .unwrap_or(0)
+    };
+    let last_at = streamed.last().map(|(t, _)| *t).unwrap_or(0);
+    let mid = during(last_at / 2);
+    let end = during(last_at);
+    assert!(
+        mid > 0,
+        "the transcript pane must show words before the job finishes; rows mid-run: {mid}"
+    );
+    assert!(
+        end > mid,
+        "streamed rows must keep growing; mid={mid} end={end} over {last_at}ms"
+    );
+    println!("ok  transcript streamed: mid={mid} rows, end={end} rows, over {last_at}ms");
 
     // 3. The transcript pane must hold the transcript.
     let view = model.transcript_view();

@@ -529,7 +529,10 @@ impl Orchestrator {
         }
 
         self.advance(job_id, JobPhase::Asr, progress);
-        let asr_stage = AsrStage::new(asr_engine, config.language, ChunkPolicy::default());
+        // Stream partials so the UI shows words while the job runs. The store
+        // and job id are right here; the stage does the per-chunk save.
+        let asr_stage = AsrStage::new(asr_engine, config.language, ChunkPolicy::default())
+            .with_streaming(self.store.clone(), job_id.to_owned());
         if let Err(error) = run_stage(
             &asr_stage,
             input,

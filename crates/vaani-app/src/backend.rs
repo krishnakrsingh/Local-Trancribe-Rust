@@ -304,7 +304,23 @@ impl AppBackend {
         } else {
             None
         };
-        let event = {
+        // While the job runs, the ASR stage saves a grouped partial after each
+        // chunk. The word count from the store's summary is a cheap indexed
+        // count, not a full parse of the transcript, so this is safe to ask on
+        // every progress event. When it grows we have more to show, so the
+        // summary counts and a `TranscriptReady` go out and the words stream
+        // into the pane instead of appearing all at once at the end.
+        let streamed_words = if progress.phase.is_terminal() {
+            None
+        } else {
+            self.orchestrator
+                .store()
+                .transcript_summary(id.as_str())
+                .ok()
+                .flatten()
+                .map(|summary| summary.word_count.max(0) as usize)
+        };
+        let (event, streamed_growth) = {
             let mut state = self.state.lock();
             let Some(entry) = state.jobs.get_mut(id.as_str()) else {
                 return;
@@ -330,9 +346,20 @@ impl AppBackend {
                     );
                 }
             }
-            ControllerEvent::JobChanged(entry.summary.clone())
+            let mut growth = false;
+            if let Some(words) = streamed_words {
+                if words > 0 && words != entry.summary.word_count.unwrap_or(0) {
+                    entry.summary.has_transcript = true;
+                    entry.summary.word_count = Some(words);
+                    growth = true;
+                }
+            }
+            (ControllerEvent::JobChanged(entry.summary.clone()), growth)
         };
         self.emit(event);
+        if streamed_growth {
+            self.emit(ControllerEvent::TranscriptReady(id.clone()));
+        }
     }
 
     /// Re-read the stored phase into the summary and publish it.

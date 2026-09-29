@@ -18,12 +18,23 @@ use vaani_core::{err, EngineStamp, JobPhase, Language, MediaWindow, Result, Tran
 use vaani_media::TARGET_SAMPLE_RATE;
 use vaani_vad::{ChunkPolicy, Chunker};
 
+/// New words required between streamed partials. See the streaming block in
+/// [`AsrStage::run`]: each partial rewrites the whole transcript, so the floor
+/// is what keeps that cost linear in transcript length.
+const STREAM_WORD_STEP: usize = 250;
+
 /// Chunked speech recognition into one accumulated [`Transcript`].
 #[derive(Debug)]
 pub struct AsrStage {
     engine: Box<dyn AsrEngine>,
     language: Language,
     policy: ChunkPolicy,
+    /// When present, partial transcripts are grouped and persisted after each
+    /// chunk so the UI can stream words while the job runs instead of showing
+    /// an empty pane for its whole duration. The final [`StoreStage`] write
+    /// overwrites the last partial; grouping is idempotent, so no special
+    /// casing is needed there.
+    streaming: Option<(vaani_storage::Store, String)>,
 }
 
 impl AsrStage {
@@ -34,7 +45,17 @@ impl AsrStage {
             engine,
             language,
             policy,
+            streaming: None,
         }
+    }
+
+    /// Publish grouped partial transcripts to `store` under `job_id` after
+    /// each chunk. Without this the transcript appears only when the stage
+    /// finishes; with it, words stream in as they are recognised.
+    #[must_use]
+    pub fn with_streaming(mut self, store: vaani_storage::Store, job_id: String) -> Self {
+        self.streaming = Some((store, job_id));
+        self
     }
 }
 
@@ -73,6 +94,9 @@ impl PipelineStage for AsrStage {
         transcript.duration = Some(window.length());
 
         let total_chunks = chunks.len();
+        // Words already handed to the store, so the next partial is only worth
+        // writing once enough new ones exist to see. See the streaming block.
+        let mut streamed_words = 0usize;
         for (index, chunk) in chunks.iter().enumerate() {
             ctx.check()?;
             let (samples, sample_rate) = {
@@ -95,6 +119,42 @@ impl PipelineStage for AsrStage {
             // frame cannot land past the end of the recording.
             let result = self.engine.transcribe(&input, ctx.cancel)?;
             transcript.push_chunk_within(chunk.start, result.segments, &window);
+            // Stream a readable partial: group what exists so far (no
+            // diarization yet, so speakers come later) and persist it. The UI
+            // reloads on TranscriptReady, which the backend emits when the
+            // stored word count grows. A failed partial write must not fail
+            // the job — the final store stage writes the complete transcript
+            // regardless — so errors are logged and swallowed here.
+            //
+            // Throttled by new words, because `replace_transcript` rewrites
+            // every row so far. Streaming on every chunk makes the write volume
+            // quadratic in transcript length: a 20,000-word meeting would do
+            // ~200 full rewrites. A 250-word floor cuts that to ~80 while
+            // still updating several times a second on real speech, and the
+            // last chunk always streams so the UI is never left behind by more
+            // than one step.
+            let recognised: usize = transcript
+                .segments
+                .iter()
+                .map(|segment| segment.words.len())
+                .sum();
+            let last_chunk = index + 1 == total_chunks;
+            if let Some((store, job_id)) = &self.streaming {
+                if last_chunk || recognised >= streamed_words + STREAM_WORD_STEP {
+                    let mut partial = transcript.clone();
+                    let _ = vaani_segment::group_within(
+                        &mut partial,
+                        window,
+                        &vaani_segment::GroupingPolicy::default(),
+                    );
+                    match store.replace_transcript(job_id, &partial) {
+                        Ok(_) => streamed_words = recognised,
+                        Err(error) => {
+                            tracing::warn!(job = job_id.as_str(), %error, "partial transcript not saved");
+                        }
+                    }
+                }
+            }
             ctx.report(
                 JobPhase::Asr,
                 Some((index + 1) as f64 / total_chunks as f64),
