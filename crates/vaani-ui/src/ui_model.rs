@@ -553,11 +553,25 @@ impl<C: JobController> UiModel<C> {
             ControllerEvent::JobAdded(job) => {
                 let id = job.id.clone();
                 state.jobs.upsert(job.clone());
-                state.jobs.select_default();
+                // Select what the user just asked for.
+                //
+                // `select_default` deliberately leaves an existing selection
+                // alone - correct for a history list, wrong here. Queue a second
+                // file and the previous job stayed selected, so the row being
+                // watched, the progress bar and the transcript pane were all
+                // showing a file that was not being transcribed. Picking a file
+                // through the dialog has always done this; the typed-path
+                // button did not, which is why the two ways in disagreed.
+                state.jobs.select(&id);
                 state
                     .app
                     .note(format!("Queued {}", view::file_name_of(&job.input)));
-                self.load_job(state, &id);
+                // It is now the selected job, so the rule allows it - and the
+                // job has no transcript yet, which is the correct thing to show
+                // for one that has just started.
+                if may_replace_the_pane(state.jobs.selected(), &id) {
+                    self.load_job(state, &id);
+                }
             }
             ControllerEvent::JobChanged(job) => {
                 let id = job.id.clone();
@@ -582,8 +596,25 @@ impl<C: JobController> UiModel<C> {
                 }
                 state.jobs.select_default();
             }
-            ControllerEvent::TranscriptReady(id) => self.load_job(state, id),
-            ControllerEvent::SpeakersChanged(id) => self.load_speakers(state, id),
+            ControllerEvent::TranscriptReady(id) => {
+                // Only if this is the job the user is looking at.
+                //
+                // Every finished job emits this, including background ones, and
+                // `load_job` replaces the pane. Without the check, transcribing
+                // two files shows whichever happens to finish first: you read
+                // one transcript and the other replaces it mid-sentence, with
+                // no indication the pane is now showing a different file. The
+                // selected job is the only thing that may change what is on
+                // screen; a background event is not that.
+                if may_replace_the_pane(state.jobs.selected(), id) {
+                    self.load_job(state, id);
+                }
+            }
+            ControllerEvent::SpeakersChanged(id) => {
+                if may_replace_the_pane(state.jobs.selected(), id) {
+                    self.load_speakers(state, id);
+                }
+            }
             ControllerEvent::RenameRejected { speaker, error, .. } => {
                 // The panel applied the name optimistically. Put the generated
                 // label back and say why, rather than leaving the UI showing a
@@ -1925,6 +1956,54 @@ fn transcript_empty_message(state: &ViewState) -> String {
         Some(job) if job.phase == JobPhase::Complete => "This job produced no speech".to_owned(),
         Some(_) => "No transcript for this job".to_owned(),
         None => "No transcript yet".to_owned(),
+    }
+}
+
+/// Whether an event about `event` may replace what is on screen.
+///
+/// The transcript pane shows exactly one job, and only the *selected* job may
+/// put its words there. This is the rule that says so, in one place, because
+/// the alternative is a transcript that swaps in mid-sentence: every finished
+/// job emits `TranscriptReady`, `load_job` replaces the pane, and a user
+/// transcribing two files would be reading one transcript while the other
+/// replaced it with no visible cause.
+///
+/// A newly queued job is included because when it is also the selected one -
+/// the first job, or the only job - its empty pane is the correct thing to
+/// show, and skipping it would leave the previous file's words on screen under
+/// the new file's name.
+fn may_replace_the_pane(selected: Option<&JobId>, event: &JobId) -> bool {
+    selected == Some(event)
+}
+
+#[cfg(test)]
+mod selection_rule_tests {
+    use super::may_replace_the_pane;
+    use crate::JobId;
+
+    #[test]
+    fn a_background_job_may_not_replace_the_pane() {
+        let selected = JobId::from("reading-this");
+        let background = JobId::from("finished-first");
+        assert!(
+            !may_replace_the_pane(Some(&selected), &background),
+            "the job the user is reading is the only one that may put words on screen"
+        );
+    }
+
+    #[test]
+    fn the_selected_job_may_replace_the_pane() {
+        let selected = JobId::from("reading-this");
+        assert!(may_replace_the_pane(Some(&selected), &selected));
+    }
+
+    #[test]
+    fn nothing_is_shown_when_nothing_is_selected() {
+        let any = JobId::from("whatever");
+        assert!(
+            !may_replace_the_pane(None, &any),
+            "with no selection there is no transcript to show, so no event may invent one"
+        );
     }
 }
 

@@ -68,10 +68,12 @@ fn bundled_model_present() -> bool {
 #[test]
 #[ignore = "needs the bundled model and the private clip; run explicitly before release"]
 fn the_window_drives_a_real_transcription() {
-    let Some(clip) = clip() else {
-        println!("SKIP: scratch/clip.wav is absent");
+    let clip = clip();
+    let video = video_clip();
+    if clip.is_none() && video.is_none() {
+        println!("SKIP: neither scratch/clip.wav nor the repo-root MP4 is present");
         return;
-    };
+    }
     if !bundled_model_present() {
         println!("SKIP: the bundled SraVaani model is absent");
         return;
@@ -86,6 +88,17 @@ fn the_window_drives_a_real_transcription() {
     // timer pump does in production.
     let host: Arc<dyn HostServices> = Arc::new(NoDialogHost);
     let session = vaani_ui::build(backend.clone(), host).expect("a window");
+
+    // The MP4 phase reuses this window, and runs *after* the WAV assertions:
+    // the checks below watch a job progress from nothing to terminal, and
+    // starting it with a completed job already in the list would satisfy that
+    // watch instantly. See `mp4_phase` for why it is not a separate test.
+    let Some(clip) = clip else {
+        if let Some(video) = &video {
+            mp4_phase(&session, video);
+        }
+        return;
+    };
     let model = &session.model;
 
     // 1. Type a path and press Transcribe, exactly as a user does.
@@ -144,29 +157,34 @@ fn the_window_drives_a_real_transcription() {
         last_overall_text,
     );
     println!("ok  progress moved; final text: {last_overall_text}");
-    // The transcript must fill in while the job runs, not appear all at once
-    // when it ends. Two things prove that: rows present before the terminal
-    // event, and their count still climbing afterwards.
-    let during = |upto: u128| {
-        streamed
-            .iter()
-            .filter(|(t, _)| *t <= upto)
-            .map(|(_, rows)| *rows)
-            .max()
-            .unwrap_or(0)
-    };
-    let last_at = streamed.last().map(|(t, _)| *t).unwrap_or(0);
-    let mid = during(last_at / 2);
-    let end = during(last_at);
+    // The transcript must fill in *while* the job runs, not appear all at once
+    // when it ends. Every sample here was taken with the job still running, so
+    // a non-zero row count is already the claim.
+    //
+    // Deliberately not "more rows at the halfway mark than at the start": where
+    // halfway falls depends on how long the first chunk spent loading weights,
+    // and that is 5 s on a good day and 12 s on a bad one. A quarter of the way
+    // in, before the ASR stage has produced anything, is not a failure of
+    // streaming. What is a failure is an empty pane throughout, or a pane that
+    // jumps from empty to complete in one step.
+    let running_rows: Vec<i32> = streamed.iter().map(|(_, r)| *r).collect();
+    let peak = running_rows.iter().copied().max().unwrap_or(0);
     assert!(
-        mid > 0,
-        "the transcript pane must show words before the job finishes; rows mid-run: {mid}"
+        peak > 0,
+        "the transcript pane must show words before the job finishes; samples: {running_rows:?}"
     );
+    let mut distinct: Vec<i32> = running_rows.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
     assert!(
-        end > mid,
-        "streamed rows must keep growing; mid={mid} end={end} over {last_at}ms"
+        distinct.iter().filter(|r| **r > 0).count() >= 2,
+        "streamed rows must arrive progressively, not in one step; samples: {running_rows:?}"
     );
-    println!("ok  transcript streamed: mid={mid} rows, end={end} rows, over {last_at}ms");
+    println!(
+        "ok  transcript streamed while running: peak {peak} rows over {} samples in {}ms",
+        streamed.len(),
+        streamed.last().map(|(t, _)| *t).unwrap_or(0)
+    );
 
     // 3. The transcript pane must hold the transcript.
     let view = model.transcript_view();
@@ -239,50 +257,29 @@ fn the_window_drives_a_real_transcription() {
         std::thread::sleep(Duration::from_millis(200));
     }
     println!("ok  export requested; file: {exported_path:?}");
+
+    // The WAV path is fully asserted; now the video path, on the same window.
+    if let Some(video) = &video {
+        mp4_phase(&session, video);
+    }
 }
 
-/// A real MP4 with spaces in the filename, driven through the same UI path.
+/// A real MP4 with spaces in the filename, driven through the *same* window.
+///
 /// Videos demux differently from WAV; a user uploading phone recordings hits
-/// this path, not the WAV one. Skips cleanly when the file is absent.
-#[test]
-#[ignore = "needs the bundled model and the repo-root MP4; run explicitly before release"]
-fn the_window_transcribes_a_real_mp4_with_spaces_in_its_name() {
-    use std::sync::Arc;
-    use vaani_ui::backend::HostServices;
-
-    #[derive(Debug, Default)]
-    struct NoDialogHost;
-    impl HostServices for NoDialogHost {
-        fn pick_media_files(&self) -> Vec<PathBuf> {
-            Vec::new()
-        }
-        fn pick_export_target(
-            &self,
-            _suggested_name: &str,
-        ) -> Option<vaani_ui::backend::ExportTarget> {
-            None
-        }
-        fn set_clipboard_text(&self, _text: &str) {}
-        fn host_name(&self) -> String {
-            "ui-ship-gate-mp4".to_string()
-        }
-    }
-
-    let Some(video) = video_clip() else {
-        println!("SKIP: repo-root MP4 is absent");
-        return;
-    };
-    if !bundled_model_present() {
-        println!("SKIP: the bundled SraVaani model is absent");
-        return;
-    }
-
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store =
-        vaani_storage::Store::open(dir.path().join("ui-ship-mp4.db")).expect("a temp store");
-    let backend = vaani_app::backend::AppBackend::new(store).expect("the real backend");
-    let host: Arc<dyn HostServices> = Arc::new(NoDialogHost);
-    let session = vaani_ui::build(backend, host).expect("a window");
+/// this path, not the WAV one.
+///
+/// A function rather than a second `#[test]` on purpose. Each `vaani_ui::build`
+/// creates a winit event loop, and a process gets exactly one - so two window
+/// tests in this binary cannot both pass, and the documented invocation runs
+/// every `#[ignore]`d test in the file. One window serving both media paths is
+/// also what a user does, and it loads the 900 MB of weights once instead of
+/// twice.
+#[allow(clippy::too_many_lines)]
+fn mp4_phase(
+    session: &vaani_ui::UiSession<std::sync::Arc<vaani_app::backend::AppBackend>>,
+    video: &std::path::Path,
+) {
     let model = &session.model;
 
     // Type the spaced path exactly as the field would hold it after a dialog
@@ -292,14 +289,38 @@ fn the_window_transcribes_a_real_mp4_with_spaces_in_its_name() {
 
     let deadline = Instant::now() + Duration::from_secs(600);
     let mut terminal_phase = None;
+    let mut words = 0usize;
+    let want = video.display().to_string();
+    // Wait for the job *and* its transcript, and confirm we are looking at the
+    // video. Two traps here, both real: reaching a terminal phase is not the
+    // same as the words being on screen, because the terminal event and the
+    // transcript load are separate; and the selection is still on the previous
+    // job for the first few pumps, so counting words there would quietly
+    // measure the *WAV* transcript and pass on the wrong data.
     while Instant::now() < deadline {
         model.pump();
         let jobs = model.job_list();
-        if let Some(first) = jobs.jobs().first().filter(|j| j.phase.is_terminal()) {
-            terminal_phase = Some(first.phase);
-            break;
+        let selected_is_video = jobs
+            .selected_job()
+            .is_some_and(|j| j.input.display().to_string() == want);
+        if let Some(first) = jobs.jobs().first() {
+            if first.phase.is_terminal() && terminal_phase.is_none() {
+                terminal_phase = Some(first.phase);
+            }
+            drop(jobs);
+            if terminal_phase.is_some() && selected_is_video {
+                let view = model.transcript_view();
+                words = view
+                    .transcript()
+                    .map(|t| t.segments.iter().map(|s| s.words.len()).sum())
+                    .unwrap_or(0);
+                if words > 0 {
+                    break;
+                }
+            }
+        } else {
+            drop(jobs);
         }
-        drop(jobs);
         std::thread::sleep(Duration::from_millis(200));
     }
     assert_eq!(
@@ -307,11 +328,11 @@ fn the_window_transcribes_a_real_mp4_with_spaces_in_its_name() {
         Some(vaani_core::JobPhase::Complete),
         "an MP4 with spaces must transcribe, not fail"
     );
-    let view = model.transcript_view();
-    let words: usize = view
-        .transcript()
-        .map(|t| t.segments.iter().map(|s| s.words.len()).sum())
-        .unwrap_or(0);
-    assert!(words > 50, "the MP4 must yield words, got {words}");
+    // The WAV clip is 1908 words and this video is a few hundred, so a count in
+    // the thousands here means the assertion read the wrong job.
+    assert!(
+        (50..1_500).contains(&words),
+        "the MP4 must yield its own words, got {words}"
+    );
     println!("ok  MP4 through the window: {words} words; UI MP4 PATH WORKS");
 }
