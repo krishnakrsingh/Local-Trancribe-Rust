@@ -33,6 +33,7 @@ arboard = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+crossbeam-channel = { workspace = true }
 
 [lints]
 workspace = true

@@ -6,7 +6,7 @@
   Builds a distribution that works on a clean machine with **no network, no
   model directory and no Python**, and then proves it before it is written.
 
-  1. `cargo build --release -p vaani-cli --bins`
+  1. `cargo build --release -p vaani-desktop -p vaani-cli --bins`
   2. Read `crates/vaani-models/manifests/registry.json` and stage exactly the
      files it marks `required`, under `models/<dir>/`.
   3. Hash every staged weight against the manifest. **A mismatch, a missing
@@ -206,7 +206,7 @@ if (-not $SkipBuild) {
   Write-Host "`n[1/7] Building" -ForegroundColor Cyan
   Push-Location $RepoRoot
   try {
-    & $Cargo build --release -p vaani-cli --bins
+    & $Cargo build --release -p vaani-desktop -p vaani-cli --bins
     if ($LASTEXITCODE -ne 0) { throw "cargo build --release failed." }
   }
   finally { Pop-Location }
@@ -215,7 +215,8 @@ else { Write-Host "`n[1/7] Building ... skipped (-SkipBuild)" }
 
 $vaaniExe = Join-Path $TargetDir "vaani.exe"
 $cliExe = Join-Path $TargetDir "vaani-cli.exe"
-foreach ($bin in @($vaaniExe, $cliExe)) {
+$guiExe = Join-Path $TargetDir "VaaniDesk.exe"
+foreach ($bin in @($vaaniExe, $cliExe, $guiExe)) {
   if (-not (Test-Path -LiteralPath $bin)) { throw "Missing build output: $bin (run without -SkipBuild)." }
 }
 
@@ -231,6 +232,9 @@ New-Item -ItemType Directory -Path $LicenseStage -Force | Out-Null
 
 Copy-Item -LiteralPath $vaaniExe -Destination (Join-Path $StageDir "vaani.exe")
 Copy-Item -LiteralPath $cliExe -Destination (Join-Path $StageDir "vaani-cli.exe")
+# The desktop app itself: a user who downloads this unzips it, double-clicks
+# VaaniDesk.exe, and never learns the CLI exists.
+Copy-Item -LiteralPath $guiExe -Destination (Join-Path $StageDir "VaaniDesk.exe")
 
 # --- model weights, verified against the manifest -------------------------
 $ModelDir = Join-Path $ModelStage $Model.dir

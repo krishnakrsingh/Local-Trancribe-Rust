@@ -90,12 +90,25 @@ fn run() -> Result<(), String> {
 fn init_logging() {
     use tracing_subscriber::EnvFilter;
 
-    let filter = EnvFilter::try_from_env("VAANI_LOG")
-        .unwrap_or_else(|_| EnvFilter::new("vaani_desktop=info,vaani_app=info,warn"));
+    let filter = EnvFilter::try_from_env("VAANI_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
 
     // `dirs::data_dir()` is the same root `vaani_storage::Store::default_path`
     // uses, so the log and the database never end up in different trees.
     let log_path = dirs::data_dir().map(|dir| dir.join("VaaniDesk").join("vaanidesk.log"));
+    // Kept separately because `log_path` is moved by the match below and the
+    // error handler still needs to know where the file is.
+    let log_path_for_errors = log_path.clone();
+
+    // A plain marker with no tracing machinery. If the file appears with only
+    // this line, the path works and the subscriber setup is at fault; if it
+    // does not appear at all, the path itself is wrong. One write, two
+    // failure modes distinguished.
+    if let Some(ref path) = log_path {
+        let _ = std::fs::write(
+            path,
+            format!("VaaniDesk {} starting\n", env!("CARGO_PKG_VERSION")),
+        );
+    }
 
     let builder = || {
         tracing_subscriber::fmt()
@@ -113,7 +126,7 @@ fn init_logging() {
         Some(path) => match path.parent().map(std::fs::create_dir_all) {
             Some(Ok(())) => std::fs::OpenOptions::new()
                 .create(true)
-                .append(false)
+                .write(true)
                 .truncate(true)
                 .open(&path)
                 .map_or_else(
@@ -129,7 +142,17 @@ fn init_logging() {
         _ => builder().try_init(),
     };
 
-    if let Err(error) = result {
-        eprintln!("note: logging to file unavailable ({error}); using stderr");
+    if let Err(error) = &result {
+        // There is no console to print to, so a failure here would vanish
+        // entirely. Append it to the log file itself, which the marker above
+        // proved is writable.
+        let msg = format!("note: logging to file unavailable ({error}); using stderr\n");
+        eprintln!("{msg}");
+        if let Some(ref path) = log_path_for_errors {
+            use std::io::Write as _;
+            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(path) {
+                let _ = f.write_all(msg.as_bytes());
+            }
+        }
     }
 }

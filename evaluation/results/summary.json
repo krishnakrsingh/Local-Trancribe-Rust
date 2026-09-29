@@ -60,7 +60,7 @@
     "human_diarization_reference": 0,
     "human_word_timing_reference": 0,
     "awaiting_annotation": 8,
-    "with_hypothesis": 8
+    "with_hypothesis": 0
   },
   "clips": [
     {
@@ -70,12 +70,12 @@
       "has_human_asr_reference": false,
       "has_human_diarization_reference": false,
       "has_human_word_timing_reference": false,
-      "has_hypothesis": true,
+      "has_hypothesis": false,
       "scored": false,
       "asr": {
         "status": "unscored",
         "reason": "no_human_asr_reference",
-        "detail": "no reference.txt accompanied by ANNOTATED.md; nobody has listened to this clip and written down what was said"
+        "detail": "neither a reference nor a hypothesis exists for this clip"
       },
       "diarization": {
         "status": "unscored",
@@ -87,23 +87,13 @@
         "reason": "no_word_timing_reference",
         "detail": "timestamp error needs reference.words.json: an orthographic reference carries no word times, and inventing them from the hypothesis would measure the system against itself"
       },
-      "intrinsic": {
-        "word_count": 144,
-        "segment_count": 29,
-        "speaker_count": 3,
-        "unattributed_segments": 0,
-        "non_monotonic_word_pairs": 0,
-        "negative_duration_words": 0,
-        "adjacent_duplicate_words": 2,
-        "duplicate_runs": 2,
-        "duration_ms": 90000
-      },
+      "intrinsic": null,
       "taxonomy": [
         {
           "id": "asr.duplicated_word",
           "class": "asr",
           "status": "measured",
-          "count": 2,
+          "count": 0,
           "unit": "contiguous runs of >= 2 adjacent identical normalised words",
           "threshold": null,
           "note": ""
@@ -157,7 +147,7 @@
           "id": "asr.hallucinated_word_proxy",
           "class": "asr",
           "status": "proxy",
-          "count": 2,
+          "count": 0,
           "unit": "adjacent identical hypothesis word pairs",
           "threshold": null,
           "note": "a repeat is what a decoding loop looks like, but a genuinely repeated word is indistinguishable from one; it is a candidate count, not a hallucination count"
@@ -270,12 +260,12 @@
       "has_human_asr_reference": false,
       "has_human_diarization_reference": false,
       "has_human_word_timing_reference": false,
-      "has_hypothesis": true,
+      "has_hypothesis": false,
       "scored": false,
       "asr": {
         "status": "unscored",
         "reason": "no_human_asr_reference",
-        "detail": "no reference.txt accompanied by ANNOTATED.md; nobody has listened to this clip and written down what was said"
+        "detail": "neither a reference nor a hypothesis exists for this clip"
       },
       "diarization": {
         "status": "unscored",
@@ -287,23 +277,13 @@
         "reason": "no_word_timing_reference",
         "detail": "timestamp error needs reference.words.json: an orthographic reference carries no word times, and inventing them from the hypothesis would measure the system against itself"
       },
-      "intrinsic": {
-        "word_count": 256,
-        "segment_count": 31,
-        "speaker_count": 2,
-        "unattributed_segments": 0,
-        "non_monotonic_word_pairs": 0,
-        "negative_duration_words": 0,
-        "adjacent_duplicate_words": 2,
-        "duplicate_runs": 2,
-        "duration_ms": 90000
-      },
+      "intrinsic": null,
       "taxonomy": [
         {
           "id": "asr.duplicated_word",
           "class": "asr",
           "status": "measured",
-          "count": 2,
+          "count": 0,
           "unit": "contiguous runs of >= 2 adjacent identical normalised words",
           "threshold": null,
           "note": ""
@@ -357,7 +337,7 @@
           "id": "asr.hallucinated_word_proxy",
           "class": "asr",
           "status": "proxy",
-          "count": 2,
+          "count": 0,
           "unit": "adjacent identical hypothesis word pairs",
           "threshold": null,
           "note": "a repeat is what a decoding loop looks like, but a genuinely repeated word is indistinguishable from one; it is a candidate count, not a hallucination count"
@@ -470,12 +450,12 @@
       "has_human_asr_reference": false,
       "has_human_diarization_reference": false,
       "has_human_word_timing_reference": false,
-      "has_hypothesis": true,
+      "has_hypothesis": false,
       "scored": false,
       "asr": {
         "status": "unscored",
         "reason": "no_human_asr_reference",
-        "detail": "no reference.txt accompanied by ANNOTATED.md; nobody has listened to this clip and written down what was said"
+        "detail": "neither a reference nor a hypothesis exists for this clip"
       },
       "diarization": {
         "status": "unscored",
@@ -487,23 +467,13 @@
         "reason": "no_word_timing_reference",
         "detail": "timestamp error needs reference.words.json: an orthographic reference carries no word times, and inventing them from the hypothesis would measure the system against itself"
       },
-      "intrinsic": {
-        "word_count": 192,
-        "segment_count": 24,
-        "speaker_count": 2,
-        "unattributed_segments": 0,
-        "non_monotonic_word_pairs": 0,
-        "negative_duration_words": 0,
-        "adjacent_duplicate_words": 4,
-        "duplicate_runs": 4,
-        "duration_ms": 90000
-      },
+      "intrinsic": null,
       "taxonomy": [
         {
           "id": "asr.duplicated_word",
           "class": "asr",
           "status": "measured",
-          "count": 4,
+          "count": 0,
           "unit": "contiguous runs of >= 2 adjacent identical normalised words",
           "threshold": null,
           "note": ""
@@ -557,7 +527,7 @@
           "id": "asr.hallucinated_word_proxy",
           "class": "asr",
           "status": "proxy",
-          "count": 4,
+          "count": 0,
           "unit": "adjacent identical hypothesis word pairs",
           "threshold": null,
           "note": "a repeat is what a decoding loop looks like, but a genuinely repeated word is indistinguishable from one; it is a candidate count, not a hallucination count"
@@ -670,12 +640,12 @@
       "has_human_asr_reference": false,
       "has_human_diarization_reference": false,
       "has_human_word_timing_reference": false,
-      "has_hypothesis": true,
+      "has_hypothesis": false,
       "scored": false,
       "asr": {
         "status": "unscored",
         "reason": "no_human_asr_reference",
-        "detail": "no reference.txt accompanied by ANNOTATED.md; nobody has listened to this clip and written down what was said"
+        "detail": "neither a reference nor a hypothesis exists for this clip"
       },
       "diarization": {
         "status": "unscored",
@@ -687,23 +657,13 @@
         "reason": "no_word_timing_reference",
         "detail": "timestamp error needs reference.words.json: an orthographic reference carries no word times, and inventing them from the hypothesis would measure the system against itself"
       },
-      "intrinsic": {
-        "word_count": 240,
-        "segment_count": 30,
-        "speaker_count": 3,
-        "unattributed_segments": 0,
-        "non_monotonic_word_pairs": 0,
-        "negative_duration_words": 0,
-        "adjacent_duplicate_words": 3,
-        "duplicate_runs": 3,
-        "duration_ms": 90000
-      },
+      "intrinsic": null,
       "taxonomy": [
         {
           "id": "asr.duplicated_word",
           "class": "asr",
           "status": "measured",
-          "count": 3,
+          "count": 0,
           "unit": "contiguous runs of >= 2 adjacent identical normalised words",
           "threshold": null,
           "note": ""
@@ -757,7 +717,7 @@
           "id": "asr.hallucinated_word_proxy",
           "class": "asr",
           "status": "proxy",
-          "count": 3,
+          "count": 0,
           "unit": "adjacent identical hypothesis word pairs",
           "threshold": null,
           "note": "a repeat is what a decoding loop looks like, but a genuinely repeated word is indistinguishable from one; it is a candidate count, not a hallucination count"
@@ -870,12 +830,12 @@
       "has_human_asr_reference": false,
       "has_human_diarization_reference": false,
       "has_human_word_timing_reference": false,
-      "has_hypothesis": true,
+      "has_hypothesis": false,
       "scored": false,
       "asr": {
         "status": "unscored",
         "reason": "no_human_asr_reference",
-        "detail": "no reference.txt accompanied by ANNOTATED.md; nobody has listened to this clip and written down what was said"
+        "detail": "neither a reference nor a hypothesis exists for this clip"
       },
       "diarization": {
         "status": "unscored",
@@ -887,23 +847,13 @@
         "reason": "no_word_timing_reference",
         "detail": "timestamp error needs reference.words.json: an orthographic reference carries no word times, and inventing them from the hypothesis would measure the system against itself"
       },
-      "intrinsic": {
-        "word_count": 234,
-        "segment_count": 28,
-        "speaker_count": 3,
-        "unattributed_segments": 0,
-        "non_monotonic_word_pairs": 0,
-        "negative_duration_words": 0,
-        "adjacent_duplicate_words": 2,
-        "duplicate_runs": 2,
-        "duration_ms": 90000
-      },
+      "intrinsic": null,
       "taxonomy": [
         {
           "id": "asr.duplicated_word",
           "class": "asr",
           "status": "measured",
-          "count": 2,
+          "count": 0,
           "unit": "contiguous runs of >= 2 adjacent identical normalised words",
           "threshold": null,
           "note": ""
@@ -957,7 +907,7 @@
           "id": "asr.hallucinated_word_proxy",
           "class": "asr",
           "status": "proxy",
-          "count": 2,
+          "count": 0,
           "unit": "adjacent identical hypothesis word pairs",
           "threshold": null,
           "note": "a repeat is what a decoding loop looks like, but a genuinely repeated word is indistinguishable from one; it is a candidate count, not a hallucination count"
@@ -1070,12 +1020,12 @@
       "has_human_asr_reference": false,
       "has_human_diarization_reference": false,
       "has_human_word_timing_reference": false,
-      "has_hypothesis": true,
+      "has_hypothesis": false,
       "scored": false,
       "asr": {
         "status": "unscored",
         "reason": "no_human_asr_reference",
-        "detail": "no reference.txt accompanied by ANNOTATED.md; nobody has listened to this clip and written down what was said"
+        "detail": "neither a reference nor a hypothesis exists for this clip"
       },
       "diarization": {
         "status": "unscored",
@@ -1087,23 +1037,13 @@
         "reason": "no_word_timing_reference",
         "detail": "timestamp error needs reference.words.json: an orthographic reference carries no word times, and inventing them from the hypothesis would measure the system against itself"
       },
-      "intrinsic": {
-        "word_count": 234,
-        "segment_count": 29,
-        "speaker_count": 2,
-        "unattributed_segments": 0,
-        "non_monotonic_word_pairs": 0,
-        "negative_duration_words": 0,
-        "adjacent_duplicate_words": 1,
-        "duplicate_runs": 1,
-        "duration_ms": 90000
-      },
+      "intrinsic": null,
       "taxonomy": [
         {
           "id": "asr.duplicated_word",
           "class": "asr",
           "status": "measured",
-          "count": 1,
+          "count": 0,
           "unit": "contiguous runs of >= 2 adjacent identical normalised words",
           "threshold": null,
           "note": ""
@@ -1157,7 +1097,7 @@
           "id": "asr.hallucinated_word_proxy",
           "class": "asr",
           "status": "proxy",
-          "count": 1,
+          "count": 0,
           "unit": "adjacent identical hypothesis word pairs",
           "threshold": null,
           "note": "a repeat is what a decoding loop looks like, but a genuinely repeated word is indistinguishable from one; it is a candidate count, not a hallucination count"
@@ -1270,12 +1210,12 @@
       "has_human_asr_reference": false,
       "has_human_diarization_reference": false,
       "has_human_word_timing_reference": false,
-      "has_hypothesis": true,
+      "has_hypothesis": false,
       "scored": false,
       "asr": {
         "status": "unscored",
         "reason": "no_human_asr_reference",
-        "detail": "no reference.txt accompanied by ANNOTATED.md; nobody has listened to this clip and written down what was said"
+        "detail": "neither a reference nor a hypothesis exists for this clip"
       },
       "diarization": {
         "status": "unscored",
@@ -1287,23 +1227,13 @@
         "reason": "no_word_timing_reference",
         "detail": "timestamp error needs reference.words.json: an orthographic reference carries no word times, and inventing them from the hypothesis would measure the system against itself"
       },
-      "intrinsic": {
-        "word_count": 108,
-        "segment_count": 21,
-        "speaker_count": 3,
-        "unattributed_segments": 0,
-        "non_monotonic_word_pairs": 0,
-        "negative_duration_words": 0,
-        "adjacent_duplicate_words": 4,
-        "duplicate_runs": 4,
-        "duration_ms": 90000
-      },
+      "intrinsic": null,
       "taxonomy": [
         {
           "id": "asr.duplicated_word",
           "class": "asr",
           "status": "measured",
-          "count": 4,
+          "count": 0,
           "unit": "contiguous runs of >= 2 adjacent identical normalised words",
           "threshold": null,
           "note": ""
@@ -1357,7 +1287,7 @@
           "id": "asr.hallucinated_word_proxy",
           "class": "asr",
           "status": "proxy",
-          "count": 4,
+          "count": 0,
           "unit": "adjacent identical hypothesis word pairs",
           "threshold": null,
           "note": "a repeat is what a decoding loop looks like, but a genuinely repeated word is indistinguishable from one; it is a candidate count, not a hallucination count"
@@ -1470,12 +1400,12 @@
       "has_human_asr_reference": false,
       "has_human_diarization_reference": false,
       "has_human_word_timing_reference": false,
-      "has_hypothesis": true,
+      "has_hypothesis": false,
       "scored": false,
       "asr": {
         "status": "unscored",
         "reason": "no_human_asr_reference",
-        "detail": "no reference.txt accompanied by ANNOTATED.md; nobody has listened to this clip and written down what was said"
+        "detail": "neither a reference nor a hypothesis exists for this clip"
       },
       "diarization": {
         "status": "unscored",
@@ -1487,23 +1417,13 @@
         "reason": "no_word_timing_reference",
         "detail": "timestamp error needs reference.words.json: an orthographic reference carries no word times, and inventing them from the hypothesis would measure the system against itself"
       },
-      "intrinsic": {
-        "word_count": 102,
-        "segment_count": 24,
-        "speaker_count": 4,
-        "unattributed_segments": 0,
-        "non_monotonic_word_pairs": 0,
-        "negative_duration_words": 0,
-        "adjacent_duplicate_words": 3,
-        "duplicate_runs": 3,
-        "duration_ms": 90000
-      },
+      "intrinsic": null,
       "taxonomy": [
         {
           "id": "asr.duplicated_word",
           "class": "asr",
           "status": "measured",
-          "count": 3,
+          "count": 0,
           "unit": "contiguous runs of >= 2 adjacent identical normalised words",
           "threshold": null,
           "note": ""
@@ -1557,7 +1477,7 @@
           "id": "asr.hallucinated_word_proxy",
           "class": "asr",
           "status": "proxy",
-          "count": 3,
+          "count": 0,
           "unit": "adjacent identical hypothesis word pairs",
           "threshold": null,
           "note": "a repeat is what a decoding loop looks like, but a genuinely repeated word is indistinguishable from one; it is a candidate count, not a hallucination count"
