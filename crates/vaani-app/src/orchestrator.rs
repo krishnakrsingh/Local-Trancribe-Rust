@@ -299,6 +299,7 @@ impl Orchestrator {
         error: &VaaniError,
         progress: &ProgressSink,
     ) -> JobOutcome {
+        self.discard_partial_transcript(job_id);
         let stored = StoredError::from_error(error);
         if let Err(store_error) = self
             .store
@@ -324,8 +325,29 @@ impl Orchestrator {
         }
     }
 
+    /// Drop the partial transcript a running job leaves behind, if any.
+    ///
+    /// The ASR stage publishes grouped partials as it goes so the UI can show
+    /// words before the job finishes. A job that then fails or is cancelled
+    /// must not keep them: everywhere else in the app - history, the empty
+    /// states, the resume check - a stored transcript means a finished one, and
+    /// a half-transcribed meeting shown as a result would be a lie the user
+    /// could not tell from a real one. A failure to delete is logged and
+    /// otherwise ignored, because the job's own terminal state is already being
+    /// recorded and must not be lost to a cleanup that failed.
+    fn discard_partial_transcript(&self, job_id: &str) {
+        if let Err(error) = self.store.delete_transcript(job_id) {
+            tracing::warn!(
+                job = job_id,
+                error = error.debug_chain(),
+                "could not discard the partial transcript"
+            );
+        }
+    }
+
     /// Record a terminal cancellation.
     fn finish_cancelled(&self, job_id: &str, progress: &ProgressSink) -> JobOutcome {
+        self.discard_partial_transcript(job_id);
         if let Err(error) = self.store.set_phase(job_id, JobPhase::Cancelled, None) {
             tracing::warn!(
                 job = job_id,

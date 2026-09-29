@@ -198,6 +198,31 @@ impl Store {
     ///
     /// Speaker renames survive. A user who has named "Speaker 2" Krishna and then
     /// re-runs diarization should not be asked again, so the previous
+    /// Discard whatever is stored for `job_id`: the transcript row, its
+    /// segments, its speakers and its search-index entries.
+    ///
+    /// This exists because a running job publishes partial transcripts as the
+    /// words come in, so a job that never finishes can leave rows behind. The
+    /// contract the rest of the app relies on is that a stored transcript means
+    /// a finished one, and this is what keeps that true for the job that did
+    /// not get there. Renames go with the rows they describe: there is nothing
+    /// to preserve when the result itself is being discarded.
+    ///
+    /// Discarding a job that never had a transcript is not an error. It is the
+    /// normal case, and the caller cannot tell the two apart.
+    pub fn delete_transcript(&self, job_id: &str) -> Result<()> {
+        self.write(|tx| {
+            tx.execute("DELETE FROM segment_fts WHERE job_id = ?1", params![job_id])?;
+            // `words` goes with `segments` through the cascade; deleting the
+            // parent explicitly is both correct and far faster than relying on
+            // a row-by-row cascade.
+            tx.execute("DELETE FROM segments WHERE job_id = ?1", params![job_id])?;
+            tx.execute("DELETE FROM speakers WHERE job_id = ?1", params![job_id])?;
+            tx.execute("DELETE FROM transcripts WHERE job_id = ?1", params![job_id])?;
+            Ok(())
+        })
+    }
+
     /// `custom_name` for each cluster index is carried across.
     pub fn replace_transcript(&self, job_id: &str, t: &Transcript) -> Result<TranscriptStats> {
         let engine_json = serde_json::to_string(&t.engine)
@@ -766,6 +791,41 @@ mod tests {
             1,
             "the first transcript survived intact"
         );
+    }
+
+    #[test]
+    fn a_discarded_transcript_leaves_nothing_behind() {
+        let (_d, s) = store_with_job("j");
+        s.replace_transcript("j", &simple()).unwrap();
+        assert!(s.transcript_summary("j").unwrap().is_some());
+        s.delete_transcript("j").unwrap();
+        // The row, its segments and its speakers all have to go, or a
+        // cancelled job would keep showing up in search with no transcript
+        // behind it.
+        assert!(
+            s.try_load_transcript("j").unwrap().is_none(),
+            "a deleted transcript must not load"
+        );
+        assert!(
+            s.transcript_summary("j").unwrap().is_none(),
+            "a deleted transcript must not have a summary"
+        );
+        assert_eq!(
+            s.search(&crate::search::SearchQuery::new("anything"))
+                .unwrap()
+                .hits
+                .len(),
+            0,
+            "a deleted transcript must not be searchable"
+        );
+    }
+
+    #[test]
+    fn discarding_a_job_that_never_had_a_transcript_is_not_an_error() {
+        let (_d, s) = store_with_job("j");
+        s.delete_transcript("j").expect("no transcript is the normal case");
+        s.delete_transcript("no-such-job")
+            .expect("an unknown job is not a failure either");
     }
 
     #[test]
