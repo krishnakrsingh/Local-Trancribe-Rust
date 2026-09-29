@@ -823,7 +823,8 @@ mod tests {
     #[test]
     fn discarding_a_job_that_never_had_a_transcript_is_not_an_error() {
         let (_d, s) = store_with_job("j");
-        s.delete_transcript("j").expect("no transcript is the normal case");
+        s.delete_transcript("j")
+            .expect("no transcript is the normal case");
         s.delete_transcript("no-such-job")
             .expect("an unknown job is not a failure either");
     }
