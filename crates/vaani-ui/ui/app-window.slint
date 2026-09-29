@@ -849,6 +849,14 @@ export component AppWindow inherits Window {
     changed transcript-scroll-y => {
         root.viewport-changed(self.transcript-scroll-y, transcript-scroll.height, transcript-scroll.width);
     }
+    // A resize is not a scroll, and the pump skips an idle tick, so without this
+    // the model never hears that the window changed size: the transcript keeps
+    // wrapping to the column count it had when the window was last scrolled,
+    // leaving a wide pane with text breaking in the middle of a third of it.
+    // Reporting the same way keeps one path for "the geometry moved".
+    changed width => {
+        root.viewport-changed(self.transcript-scroll-y, transcript-scroll.height, transcript-scroll.width);
+    }
 
     // Window-level shortcuts live on a focus scope rather than on the Window,
     // because Slint 1.18's Window has no `key-pressed`. The scope forwards focus
