@@ -20,7 +20,7 @@ use parking_lot::Mutex;
 use vaani_core::{err, CancelToken, JobPhase, Progress, Transcript};
 use vaani_export::{ExportFormat as ExportFmt, ExportOptions, ExportTarget as ExportTgt};
 use vaani_models::ModelManager;
-use vaani_storage::{new_job_id, Store, StoredError};
+use vaani_storage::{new_job_id, JobFilter, JobOrder, Store, StoredError};
 use vaani_ui::backend::{
     user_facing, AppSettings, Choice, ControllerEvent, ExportFormat as UiExportFormat,
     ExportRequest, ExportTarget as UiExportTarget, JobController, JobId, JobSummary, SettingsPatch,
@@ -188,7 +188,80 @@ impl AppBackend {
             me: OnceLock::new(),
         });
         let _ = backend.me.set(Arc::downgrade(&backend));
+        backend.load_history();
         Ok(backend)
+    }
+
+    /// Read completed jobs from the store into the in-memory list.
+    ///
+    /// Without this, every launch starts with an empty job list no matter how
+    /// many transcripts the database holds — the user transcribes, closes the
+    /// app, reopens, and everything is "gone". The store is the source of
+    /// truth across restarts; the in-memory map is only for jobs running now.
+    ///
+    /// History loading never fails startup. A corrupt row is skipped with a
+    /// log line, not propagated: an app that refuses to open because one old
+    /// transcript is unreadable is worse than one that shows the rest.
+    /// Loaded jobs keep their stored phase (the store's own recovery marks
+    /// interrupted work terminal on open), carry no progress fraction (there
+    /// is no meaningful percentage for finished work), and get a fresh inert
+    /// token because nothing is running.
+    fn load_history(&self) {
+        /// How many past jobs to show. Enough for months of meetings; the list
+        /// is windowed in the UI, so this bounds startup I/O, not display.
+        const HISTORY_LIMIT: u32 = 200;
+
+        let page = match self.orchestrator.store().list_jobs(
+            &JobFilter {
+                order: JobOrder::NewestFirst,
+                ..Default::default()
+            },
+            HISTORY_LIMIT,
+            0,
+        ) {
+            Ok(page) => page,
+            Err(error) => {
+                tracing::warn!(%error, "job history unreadable; starting with an empty list");
+                return;
+            }
+        };
+        // Newest-first from the store, reversed to the oldest-first order the
+        // job list contract promises, so the 200 most recent survive the cap.
+        let mut state = self.state.lock();
+        for record in page.jobs.into_iter().rev() {
+            let has_transcript = self
+                .orchestrator
+                .store()
+                .try_load_transcript(record.id.as_str())
+                .map(|t| t.is_some())
+                .unwrap_or(false);
+            if !has_transcript {
+                tracing::debug!(job = %record.id, "history job has no transcript; listing it anyway");
+            }
+            let summary = JobSummary {
+                id: JobId::new(record.id.clone()),
+                input: PathBuf::from(record.input_path.clone()),
+                phase: record.phase,
+                overall: (record.phase == JobPhase::Complete).then_some(1.0),
+                detail: None,
+                eta: None,
+                error: record.error.as_ref().map(stored_to_user),
+                has_transcript,
+                cancel_requested: false,
+                word_count: usize::try_from(record.word_count).ok().filter(|&w| w > 0),
+            };
+            state.order.push(record.id.clone());
+            state.jobs.insert(
+                record.id,
+                JobEntry {
+                    summary,
+                    token: CancelToken::new(),
+                },
+            );
+        }
+        if !state.order.is_empty() {
+            tracing::info!(jobs = state.order.len(), "job history loaded");
+        }
     }
 
     /// Relocate the parent directory for per-job work dirs.
@@ -1007,5 +1080,86 @@ mod tests {
         assert!(!updated.diarize);
         assert_eq!(updated.language, "hi");
         assert_eq!(fix.backend.settings().language, "hi");
+    }
+
+    /// History must survive a restart. A store holding a completed job must
+    /// produce a backend that lists it, with its transcript readable — this is
+    /// what the window shows on every launch after the first transcription.
+    /// The bug was that `jobs()` read only in-memory state, so the list was
+    /// always empty on startup no matter what the database held.
+    #[test]
+    fn history_loads_completed_jobs_with_their_transcripts() {
+        use crate::fakes::segment;
+        use vaani_core::{EngineStamp, Time};
+
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("history.db")).unwrap();
+        // Seed two completed jobs, one with a transcript and one without, plus
+        // a failed one, to prove each state round-trips honestly.
+        for (id, with_transcript, phase) in [
+            ("old-complete", true, JobPhase::Complete),
+            ("old-empty", false, JobPhase::Complete),
+            ("old-failed", false, JobPhase::Failed),
+        ] {
+            let mut rec = vaani_storage::JobRecord::new(id, temp.path().join("a.wav"));
+            store.upsert_job(&rec).unwrap();
+            if with_transcript {
+                let mut t = Transcript::new(EngineStamp::asr("fake-asr", "test.0"));
+                t.push_chunk(Time::ZERO, vec![segment("hello world", 0, 1000)]);
+                store.replace_transcript(id, &t).unwrap();
+            }
+            // The store refuses a bare Failed with no cause — a failure with
+            // no reason is a bug, not a state — so the failed job carries one.
+            let reason = (phase == JobPhase::Failed).then(|| {
+                vaani_storage::StoredError::new("transcription_failed", "the engine failed")
+            });
+            store.set_phase(id, phase, reason.as_ref()).unwrap();
+            let _ = &mut rec;
+        }
+
+        let asr = FakeAsr::new();
+        let providers = EngineProviders {
+            vad: Arc::new(FakeVad::speech()) as Arc<dyn VadEngine>,
+            asr: Arc::new(FixedAsrProvider::new(asr)),
+            diar: None,
+        };
+        let orchestrator = Arc::new(Orchestrator::with_providers(store, providers));
+        let backend = AppBackend::with_orchestrator(orchestrator).unwrap();
+
+        let jobs = backend.jobs();
+        assert_eq!(jobs.len(), 3, "all three stored jobs must be listed");
+        // Oldest first, per the job list contract.
+        assert_eq!(jobs[0].id.as_str(), "old-complete");
+        assert_eq!(jobs[0].phase, JobPhase::Complete);
+        assert!(jobs[0].has_transcript);
+        assert_eq!(jobs[0].word_count, Some(2));
+        assert!(
+            !jobs[1].has_transcript,
+            "no transcript stored, none claimed"
+        );
+        assert_eq!(jobs[2].phase, JobPhase::Failed);
+        // And the transcript itself must be readable, not just flagged.
+        let t = backend
+            .transcript(&JobId::new("old-complete"))
+            .unwrap()
+            .expect("stored transcript must load");
+        assert_eq!(t.segments.len(), 1);
+    }
+
+    /// A corrupt history must not take the app down with it. Startup with an
+    /// unreadable row still opens; the bad row is skipped, not fatal.
+    #[test]
+    fn history_with_no_jobs_is_an_empty_list_not_an_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("empty.db")).unwrap();
+        let asr = FakeAsr::new();
+        let providers = EngineProviders {
+            vad: Arc::new(FakeVad::speech()) as Arc<dyn VadEngine>,
+            asr: Arc::new(FixedAsrProvider::new(asr)),
+            diar: None,
+        };
+        let orchestrator = Arc::new(Orchestrator::with_providers(store, providers));
+        let backend = AppBackend::with_orchestrator(orchestrator).unwrap();
+        assert!(backend.jobs().is_empty());
     }
 }
