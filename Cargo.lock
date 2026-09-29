@@ -5765,6 +5765,7 @@ dependencies = [
  "arboard",
  "crossbeam-channel",
  "dirs",
+ "slint",
  "tempfile",
  "tracing",
  "tracing-subscriber",

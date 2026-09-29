@@ -35,7 +35,7 @@ use vaani_ui::backend::{ExportTarget, HostServices};
 /// relies on.
 #[cfg(windows)]
 #[allow(unsafe_code)] // the sole COM boundary in the application
-mod filedialog {
+pub mod filedialog {
     use std::ffi::c_void;
     use std::path::PathBuf;
     use windows::Win32::System::Com::{
@@ -288,7 +288,7 @@ mod filedialog {
 /// A non-Windows host has no dialog. Returning empty keeps the window usable:
 /// the user can type a path instead of browsing for one.
 #[cfg(not(windows))]
-mod filedialog {
+pub mod filedialog {
     use std::path::PathBuf;
     pub fn pick_files(_title: &str) -> Vec<PathBuf> {
         Vec::new()

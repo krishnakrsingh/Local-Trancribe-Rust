@@ -20,9 +20,9 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 #![warn(missing_docs)]
 
-mod host;
-
 use std::sync::Arc;
+
+use vaani_desktop::host::DesktopHost;
 
 use vaani_app::backend::AppBackend;
 use vaani_storage::Store;
@@ -75,7 +75,7 @@ fn run() -> Result<(), String> {
     );
 
     // The one blocking, user-visible call in the process.
-    vaani_ui::run(backend, Arc::new(host::DesktopHost::new()))
+    vaani_ui::run(backend, Arc::new(DesktopHost::new()))
         .map_err(|error| format!("the window could not be created: {error}"))
 }
 
