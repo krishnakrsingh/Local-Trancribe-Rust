@@ -176,25 +176,38 @@ pub mod filedialog {
             return Vec::new();
         }
 
-        // SAFETY: after a successful `Show`, the dialog holds a shell item
-        // array of the user's selection. `GetCount`/`GetItemAt` and
-        // `GetDisplayName` are the documented accessors, and each PWSTR is
-        // freed by `shell_item_path`.
+        // SAFETY: after a successful `Show`, the dialog holds the user's
+        // selection. Two APIs read it, and both are needed:
+        //
+        // `GetSelectedItems` reflects what is selected IN THE VIEW. When the
+        // user types or pastes a path and presses Enter, nothing in the view
+        // is "selected" — the dialog resolves the typed path directly to its
+        // result instead. In that case GetSelectedItems fails with E_FAIL
+        // while GetResult holds the file. Reading only the collection meant
+        // pasted paths silently yielded nothing, which is precisely how a
+        // user adds a file they already have the path for. So: the collection
+        // first (it carries multi-select), the single result as fallback.
         unsafe {
-            let items = match dialog.GetSelectedItems() {
-                Ok(i) => i,
-                Err(_) => return Vec::new(),
-            };
-            let count = items.GetCount().unwrap_or(0);
-            let mut out = Vec::with_capacity(count as usize);
-            for idx in 0..count {
-                if let Ok(item) = items.GetItemAt(idx)
-                    && let Some(path) = shell_item_path(&item)
-                {
-                    out.push(path);
+            if let Ok(items) = dialog.GetSelectedItems() {
+                let count = items.GetCount().unwrap_or(0);
+                let mut out = Vec::with_capacity(count as usize);
+                for idx in 0..count {
+                    if let Ok(item) = items.GetItemAt(idx)
+                        && let Some(path) = shell_item_path(&item)
+                    {
+                        out.push(path);
+                    }
+                }
+                if !out.is_empty() {
+                    return out;
                 }
             }
-            out
+            if let Ok(item) = dialog.GetResult()
+                && let Some(path) = shell_item_path(&item)
+            {
+                return vec![path];
+            }
+            Vec::new()
         }
     }
 

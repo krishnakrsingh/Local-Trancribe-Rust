@@ -47,6 +47,16 @@ fn clip() -> Option<PathBuf> {
     p.is_file().then_some(p)
 }
 
+/// A real video file with spaces in the name, the way users' files look.
+/// Returns None when absent so the test skips instead of failing.
+fn video_clip() -> Option<PathBuf> {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("WhatsApp Video 2026-09-27 at 12.30.15 AM.mp4");
+    p.is_file().then_some(p)
+}
+
 fn bundled_model_present() -> bool {
     vaani_models::ModelManager::embedded()
         .ok()
@@ -173,4 +183,79 @@ fn the_window_drives_a_real_transcription() {
         std::thread::sleep(Duration::from_millis(200));
     }
     println!("ok  export requested; file: {exported_path:?}");
+}
+
+/// A real MP4 with spaces in the filename, driven through the same UI path.
+/// Videos demux differently from WAV; a user uploading phone recordings hits
+/// this path, not the WAV one. Skips cleanly when the file is absent.
+#[test]
+#[ignore = "needs the bundled model and the repo-root MP4; run explicitly before release"]
+fn the_window_transcribes_a_real_mp4_with_spaces_in_its_name() {
+    use std::sync::Arc;
+    use vaani_ui::backend::HostServices;
+
+    #[derive(Debug, Default)]
+    struct NoDialogHost;
+    impl HostServices for NoDialogHost {
+        fn pick_media_files(&self) -> Vec<PathBuf> {
+            Vec::new()
+        }
+        fn pick_export_target(
+            &self,
+            _suggested_name: &str,
+        ) -> Option<vaani_ui::backend::ExportTarget> {
+            None
+        }
+        fn set_clipboard_text(&self, _text: &str) {}
+        fn host_name(&self) -> String {
+            "ui-ship-gate-mp4".to_string()
+        }
+    }
+
+    let Some(video) = video_clip() else {
+        println!("SKIP: repo-root MP4 is absent");
+        return;
+    };
+    if !bundled_model_present() {
+        println!("SKIP: the bundled SraVaani model is absent");
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store =
+        vaani_storage::Store::open(dir.path().join("ui-ship-mp4.db")).expect("a temp store");
+    let backend = vaani_app::backend::AppBackend::new(store).expect("the real backend");
+    let host: Arc<dyn HostServices> = Arc::new(NoDialogHost);
+    let session = vaani_ui::build(backend, host).expect("a window");
+    let model = &session.model;
+
+    // Type the spaced path exactly as the field would hold it after a dialog
+    // pick, then press Transcribe.
+    model.input_edited(video.display().to_string());
+    model.enqueue();
+
+    let deadline = Instant::now() + Duration::from_secs(600);
+    let mut terminal_phase = None;
+    while Instant::now() < deadline {
+        model.pump();
+        let jobs = model.job_list();
+        if let Some(first) = jobs.jobs().first().filter(|j| j.phase.is_terminal()) {
+            terminal_phase = Some(first.phase);
+            break;
+        }
+        drop(jobs);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert_eq!(
+        terminal_phase,
+        Some(vaani_core::JobPhase::Complete),
+        "an MP4 with spaces must transcribe, not fail"
+    );
+    let view = model.transcript_view();
+    let words: usize = view
+        .transcript()
+        .map(|t| t.segments.iter().map(|s| s.words.len()).sum())
+        .unwrap_or(0);
+    assert!(words > 50, "the MP4 must yield words, got {words}");
+    println!("ok  MP4 through the window: {words} words; UI MP4 PATH WORKS");
 }
