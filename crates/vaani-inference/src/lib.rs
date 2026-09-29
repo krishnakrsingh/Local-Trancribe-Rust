@@ -44,7 +44,10 @@ pub mod session;
 
 pub use capability::{CudaProbe, GpuAdapter, MachineCapabilities};
 pub use runtime::{ActiveProvider, Provider, ProviderStatus, RuntimeLocation};
-pub use session::{F16Tensor, F32Tensor, I32Tensor, I64Tensor, Input, OnnxSession, OutputTensor};
+pub use session::{
+    ConvSearch, CudaTuning, F16Tensor, F32Tensor, I32Tensor, I64Tensor, Input, OnnxSession,
+    OutputTensor,
+};
 
 /// Everything `vaani doctor` needs to print about the inference stack, in one
 /// serialisable value.

@@ -49,8 +49,8 @@ use std::time::Instant;
 use sentencepiece_rs::SentencePieceProcessor;
 use vaani_core::{CancelToken, Language, Result, Segment, Time, Word, err};
 use vaani_inference::{
-    F16Tensor, F32Tensor, I32Tensor, I64Tensor, Input, MachineCapabilities, OnnxSession,
-    OutputTensor, Provider,
+    CudaTuning, F16Tensor, F32Tensor, I32Tensor, I64Tensor, Input, MachineCapabilities,
+    OnnxSession, OutputTensor, Provider,
 };
 
 use crate::engine::{AsrEngine, AsrTimings, AudioChunk, ChunkResult, EngineArtifacts};
@@ -175,6 +175,11 @@ pub struct SraVaaniEngine {
     tokenizer: SentencePieceProcessor,
     model_version: String,
     scratch: Mutex<Scratch>,
+    /// Granularity of the encoder's time dimension. `0` disables bucketing.
+    ///
+    /// Atomic rather than a plain field so the performance lab can flip it
+    /// between runs without contending with a transcribing worker.
+    frame_bucket_slot: std::sync::atomic::AtomicUsize,
     /// `None` until `load` succeeds. An ONNX session cannot be "half loaded",
     /// so the options are presence of a session.
     sessions: Mutex<Option<Sessions>>,
@@ -221,6 +226,9 @@ impl SraVaaniEngine {
             tables,
             tokenizer,
             model_version: "1.0".to_string(),
+            frame_bucket_slot: std::sync::atomic::AtomicUsize::new(
+                frame_bucket_override().unwrap_or(ENCODER_FRAME_BUCKET),
+            ),
             scratch: Mutex::new(Scratch {
                 frame: vec![0f32; 1024],
                 logits: vec![0f32; 5006],
@@ -481,12 +489,31 @@ impl SraVaaniEngine {
         cancel: &CancelToken,
     ) -> Result<(F32Tensor, usize)> {
         cancel.check()?;
+        // Round the time dimension up to a bucket before the graph sees it.
+        //
+        // The encoder takes a *dynamic* time dimension, and every distinct
+        // value is a shape ONNX Runtime has never planned: a new execution
+        // plan, a new cuDNN algorithm choice, and then only a fraction of the
+        // time actually spent on the audio. Production chunk lengths are all
+        // slightly different - 3123, 3052, 3170 frames - so a meeting paid
+        // that fixed cost once per chunk. Measured on a 4 GB laptop GPU, a
+        // 4.5-second chunk cost the same 490 ms to encode as a 60-second one,
+        // which is the clearest possible statement that the cost was not in the
+        // audio.
+        //
+        // Bucketing trades a little wasted arithmetic for far fewer plans. The
+        // pad is zeros on the time axis and `feature_lengths` still carries the
+        // true length, so the graph masks the tail exactly as it already does
+        // for the frames it pads itself to reach a whole number of encoder
+        // steps. The frozen goldens are what prove that, and they are checked
+        // on every build.
+        let padded = self.bucketed_frames(mel.n_frames);
         // The encoder graph's I/O is fp16, so the log-mel is converted once,
         // here. The front end itself stays f32 because the per-feature
         // normalisation divides by a standard deviation.
         let feats = F16Tensor::from_f32(&F32Tensor::new(
-            vec![1, self.frontend.n_mels as i64, mel.n_frames as i64],
-            mel.data.clone(),
+            vec![1, self.frontend.n_mels as i64, padded as i64],
+            pad_frames(mel, padded),
         )?);
         let lengths = I64Tensor::scalar(mel.valid_frames as i64);
         let out = sessions.encoder.run(
@@ -517,10 +544,75 @@ impl SraVaaniEngine {
         }
         Ok((enc, reported as usize))
     }
+
+    /// The time-dimension length actually handed to the encoder graph.
+    ///
+    /// Rounds up to a multiple of [`ENCODER_FRAME_BUCKET`]. `0` disables
+    /// bucketing, which is only useful for a benchmark that needs to reproduce
+    /// the unbucketed cost.
+    fn bucketed_frames(&self, n_frames: usize) -> usize {
+        let bucket = self
+            .frame_bucket_slot
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if bucket == 0 {
+            return n_frames;
+        }
+        n_frames.div_ceil(bucket) * bucket
+    }
+
+    /// Change the encoder's frame bucket. `0` disables bucketing.
+    ///
+    /// Exists for the performance lab's A/B mode, which needs both settings live
+    /// in one process: this laptop's GPU drifts by twenty percent between runs,
+    /// so the only trustworthy comparison interleaves them and takes medians.
+    /// Two engines in one process also share the loaded weights on disk and the
+    /// warm allocator, which is where most of the run-to-run variance lives.
+    pub fn set_frame_bucket(&self, frames: usize) {
+        self.frame_bucket_slot
+            .store(frames, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
-/// `argmax` over the symbol logits, and over the duration logits.
+/// Read the encoder's frame-bucket override from the environment.
 ///
+/// Present so the performance lab can sweep the value without a rebuild for
+/// each point. Absent, the engine uses [`ENCODER_FRAME_BUCKET`]. `0` means "no
+/// bucketing", which is how the unbucketed cost is reproduced for comparison.
+fn frame_bucket_override() -> Option<usize> {
+    std::env::var("VAANI_ENCODER_FRAME_BUCKET")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+}
+
+/// Granularity, in mel frames, of the encoder's time dimension.
+///
+/// 512 frames is 5.12 s at a 10 ms hop. Chosen by measurement rather than by
+/// taste: it turns a meeting's 23 differently-shaped chunks into a handful of
+/// shapes while never padding a chunk by more than five seconds, and it cut the
+/// encoder's wall time by roughly two thirds on a 14-minute recording. Halving
+/// it buys back some of the wasted arithmetic and gives back some of the plan
+/// cost; the curve is shallow on both sides, which is what makes this a safe
+/// default rather than a tuned magic number.
+pub const ENCODER_FRAME_BUCKET: usize = 512;
+
+/// Copy `mel` into a `padded`-frame buffer, zero-filling the tail.
+///
+/// Mel-major, so each mel band's row is copied whole and the padding lands at
+/// the end of every row. `padded <= mel.n_frames` returns the input untouched,
+/// so a bucket smaller than the frame count can never lose data.
+fn pad_frames(mel: &crate::frontend::LogMel, padded: usize) -> Vec<f32> {
+    if padded <= mel.n_frames {
+        return mel.data.clone();
+    }
+    let mut out = vec![0f32; mel.n_mels * padded];
+    for m in 0..mel.n_mels {
+        let (src, dst) = (m * mel.n_frames, m * padded);
+        out[dst..dst + mel.n_frames].copy_from_slice(&mel.data[src..src + mel.n_frames]);
+    }
+    out
+}
+
+/// `argmax` over the symbol logits, and over the duration logits.///
 /// Split out so it can be unit tested against hand-built logits, including the
 /// boundary case where blank wins.
 fn argmax_pair(logits: &[f32], cfg: &SraVaaniConfig) -> (i32, i32) {
@@ -627,6 +719,17 @@ impl AsrEngine for SraVaaniEngine {
         self.sessions.lock().map(|g| g.is_some()).unwrap_or(false)
     }
 
+    fn active_provider(&self) -> Option<vaani_inference::ActiveProvider> {
+        // The encoder is the session that decides it, and both sessions are
+        // created from the same provider, so either answers the question. Read
+        // through the lock and ignore a poisoned one: "which device" must not
+        // panic a UI that is only trying to draw a line of text.
+        self.sessions
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|s| s.encoder.provider_status().active))
+    }
+
     fn cancel(&self) {
         // Cancellation travels through the `CancelToken` handed to
         // `transcribe`, which the job system owns and can cancel from the UI
@@ -711,8 +814,41 @@ pub fn open(
         .map(|a| a.free_vram_bytes().saturating_sub(256 * 1024 * 1024))
         .filter(|v| *v > 0);
     let sessions = Sessions {
-        encoder: OnnxSession::load(&artifacts.encoder, provider, caps, vram)?,
-        decoder: OnnxSession::load(&artifacts.decoder_joint, provider, caps, vram)?,
+        // The two graphs want opposite things, and giving them the same settings
+        // is leaving most of the speed on the table.
+        //
+        // The encoder runs once per chunk on a *dynamic* time dimension, so a
+        // CUDA graph would be re-captured for every new shape and cost more than
+        // it saves. What it wants instead is not to see new shapes at all,
+        // which is handled where the features are built.
+        //
+        // The decode joint is the opposite case: 21 nodes, every dimension
+        // static, and it runs once per emission step - thousands of times per
+        // chunk. At that ratio the cost is kernel-launch overhead, not
+        // arithmetic, and capturing the graph is the right answer.
+        //
+        // Not switched on yet. `enable_cuda_graph=1` in this ONNX Runtime build
+        // captures the run but then cannot hand the outputs back through the
+        // ordinary path: the first emission step aborts inside `ort`'s tensor
+        // extraction with "expected `typeinfo_ptr` to not be null". CUDA graph
+        // in ORT is documented as pairing with IO binding, where outputs are
+        // read from device buffers we own, so that is the shape this has to
+        // take. Until then the loop pays per-step launch overhead, and the
+        // honest numbers are the ones measured with it off.
+        encoder: OnnxSession::load_tuned(
+            &artifacts.encoder,
+            provider,
+            caps,
+            vram,
+            CudaTuning::default(),
+        )?,
+        decoder: OnnxSession::load_tuned(
+            &artifacts.decoder_joint,
+            provider,
+            caps,
+            vram,
+            CudaTuning::default(),
+        )?,
     };
     *engine.sessions.lock().map_err(|_| poisoned())? = Some(sessions);
     Ok(engine)

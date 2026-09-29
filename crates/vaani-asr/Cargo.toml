@@ -18,6 +18,11 @@ sentencepiece-rs = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# The `asr-profile` example has to reproduce production chunking, because the
+# encoder's cost and the decode loop's length both depend on how the audio was
+# split before it reached the engine. Measuring a whole file in one call is not
+# a faster measurement, it is a different and much more expensive one.
+vaani-vad = { workspace = true }
 
 [lints]
 workspace = true

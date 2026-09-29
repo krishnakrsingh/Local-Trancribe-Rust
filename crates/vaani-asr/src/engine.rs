@@ -184,6 +184,18 @@ pub trait AsrEngine: Send + Sync + std::fmt::Debug {
     /// `CancelToken` may be owned by a job that has already been dropped.
     fn cancel(&self);
 
+    /// Which accelerator the weights are actually running on, once loaded.
+    ///
+    /// `None` before [`AsrEngine::load`]. The distinction this exists to keep
+    /// honest: a machine can name an RTX 3050 Ti and still be running the CPU
+    /// because the CUDA provider DLL was not shipped, and a UI that reports the
+    /// *detected* hardware rather than the *active* provider will tell a user
+    /// their GPU is doing the work while the CPU is. Defaults to `None` so an
+    /// engine that has no accelerator story needs no change.
+    fn active_provider(&self) -> Option<vaani_inference::ActiveProvider> {
+        None
+    }
+
     /// Run a warm-up pass and report timings, without producing a transcript.
     ///
     /// Separate from `transcribe` because the first call on a real model pays

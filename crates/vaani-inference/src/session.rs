@@ -185,6 +185,44 @@ pub enum Input {
 }
 
 impl Input {
+    /// The input's name.
+    pub fn name(&self) -> &str {
+        match self {
+            Self::F32 { name, .. }
+            | Self::F16 { name, .. }
+            | Self::I32 { name, .. }
+            | Self::I64 { name, .. } => name,
+        }
+    }
+
+    /// Move this input's data into an ONNX Runtime value.
+    ///
+    /// The tensor is built from an owned copy of the data, which is why the
+    /// ordinary [`OnnxSession::run`] path is allocation-heavy: the copy is
+    /// made, handed to ORT, and dropped, once per input per call.
+    fn to_value(&self) -> Result<ort::value::Value> {
+        let name = self.name();
+        let bad = |e: ort::Error<()>| err::internal().with_cause(format!("input {name}: {e}"));
+        Ok(match self {
+            Self::F32 { t, .. } => {
+                let v = Tensor::from_array((t.shape.clone(), t.data.clone())).map_err(bad)?;
+                ort::value::Value::from(v)
+            }
+            Self::F16 { t, .. } => {
+                let v = Tensor::from_array((t.shape.clone(), t.data.clone())).map_err(bad)?;
+                ort::value::Value::from(v)
+            }
+            Self::I32 { t, .. } => {
+                let v = Tensor::from_array((t.shape.clone(), t.data.clone())).map_err(bad)?;
+                ort::value::Value::from(v)
+            }
+            Self::I64 { t, .. } => {
+                let v = Tensor::from_array((t.shape.clone(), t.data.clone())).map_err(bad)?;
+                ort::value::Value::from(v)
+            }
+        })
+    }
+
     /// A named f32 input.
     pub fn f32(name: &str, t: F32Tensor) -> Self {
         Self::F32 {
@@ -233,6 +271,76 @@ impl std::fmt::Debug for OnnxSession {
             .field("outputs", &self.output_names)
             .field("threads", &self.threads)
             .finish_non_exhaustive()
+    }
+}
+
+/// How aggressively cuDNN should look for a convolution algorithm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConvSearch {
+    /// Pick from the heuristics. No first-use stall.
+    #[default]
+    Heuristic,
+    /// Benchmark the candidates on first use and keep the winner.
+    ///
+    /// Can be a large win on a graph full of convolutions, and a multi-second
+    /// stall the first time a *new shape* reaches it. A shape the search has
+    /// not seen pays it again, which is why how the encoder's shapes are chosen
+    /// matters more here than this setting does.
+    Exhaustive,
+}
+
+/// The CUDA provider knobs VaaniDesk is allowed to turn.
+///
+/// A set rather than a bag of booleans because these are not independent
+/// preferences: they are one decision - how hard to work to avoid per-call
+/// overhead - and each has a latency or precision trade-off that has to be made
+/// deliberately and recorded rather than discovered by a benchmark nobody
+/// re-runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CudaTuning {
+    /// Capture each `Run` into a CUDA graph and replay it.
+    ///
+    /// Only worth enabling for a graph whose shapes never change: capture
+    /// happens per distinct shape, so a dynamic input dimension turns this into
+    /// a capture cost on every call. On a 21-node static graph invoked
+    /// thousands of times the win is large, because it replaces thousands of
+    /// kernel launches with one.
+    pub cuda_graph: bool,
+    /// Allow TF32 on tensor cores. Costs a little mantissa precision.
+    pub tf32: bool,
+    /// cuDNN convolution algorithm search.
+    pub conv_search: ConvSearch,
+    /// Let cuDNN use its largest workspace. Sometimes faster, and sometimes
+    /// several gigabytes.
+    pub conv_max_workspace: bool,
+}
+
+impl Default for CudaTuning {
+    /// The measured-fastest settings for SraVaani's encoder, with the frozen
+    /// goldens still exact.
+    ///
+    /// `cuda_graph` is off here because the encoder takes a dynamic time
+    /// dimension: capturing per shape would cost more than it saves. The decode
+    /// loop, which is static, uses [`CudaTuning::low_latency`].
+    fn default() -> Self {
+        Self {
+            cuda_graph: false,
+            tf32: true,
+            conv_search: ConvSearch::Heuristic,
+            conv_max_workspace: false,
+        }
+    }
+}
+
+impl CudaTuning {
+    /// For a graph invoked many times with fixed shapes, where launch overhead
+    /// dominates rather than arithmetic: SraVaani's decode joint.
+    #[must_use]
+    pub fn low_latency() -> Self {
+        Self {
+            cuda_graph: true,
+            ..Self::default()
+        }
     }
 }
 
@@ -302,12 +410,42 @@ impl OnnxSession {
     /// numbers for a configuration nobody ran.
     ///
     /// Product code calls [`Self::load`].
+    ///
+    /// [`Self::load_tuned`] is the real entry point; this wrapper exists so
+    /// callers that predate the tuning set keep compiling.
     pub fn load_with_options(
         model_path: &Path,
         provider: Provider,
         caps: &MachineCapabilities,
         max_vram_bytes: Option<u64>,
-        cuda_option_overrides: Vec<(String, String)>,
+        _unused: Vec<(String, String)>,
+    ) -> Result<Self> {
+        Self::load_inner(
+            model_path,
+            provider,
+            caps,
+            max_vram_bytes,
+            CudaTuning::default(),
+        )
+    }
+
+    /// Load with an explicit [`CudaTuning`].
+    pub fn load_tuned(
+        model_path: &Path,
+        provider: Provider,
+        caps: &MachineCapabilities,
+        max_vram_bytes: Option<u64>,
+        tuning: CudaTuning,
+    ) -> Result<Self> {
+        Self::load_inner(model_path, provider, caps, max_vram_bytes, tuning)
+    }
+
+    fn load_inner(
+        model_path: &Path,
+        provider: Provider,
+        caps: &MachineCapabilities,
+        max_vram_bytes: Option<u64>,
+        tuning: CudaTuning,
     ) -> Result<Self> {
         ensure_initialised()?;
 
@@ -339,28 +477,20 @@ impl OnnxSession {
                 // power of two, which on a 4 GB card is the difference between
                 // fitting and not.
                 .with_arena_extend_strategy(ort::ep::ArenaExtendStrategy::SameAsRequested)
-                // cuDNN's max-workspace search can allocate *several GB*. The
-                // Conformer conv modules are depthwise-separable with small
-                // channel counts, so tensor-core conv algorithms would not be
-                // chosen anyway and the workspace is pure waste.
-                .with_conv_max_workspace(false)
-                // The default EXHAUSTIVE search benchmarks algorithms on first
-                // use, which shows up as a multi-second stall on the first job.
-                .with_conv_algorithm_search(ort::ep::cuda::ConvAlgorithmSearch::Heuristic);
+                // The Conformer conv modules are depthwise-separable with small
+                // channel counts, so cuDNN's largest-workspace algorithms buy
+                // nothing and can reserve gigabytes.
+                .with_conv_max_workspace(tuning.conv_max_workspace)
+                .with_tf32(tuning.tf32)
+                .with_conv_algorithm_search(match tuning.conv_search {
+                    ConvSearch::Heuristic => ort::ep::cuda::ConvAlgorithmSearch::Heuristic,
+                    ConvSearch::Exhaustive => ort::ep::cuda::ConvAlgorithmSearch::Exhaustive,
+                });
+            if tuning.cuda_graph {
+                ep = ep.with_cuda_graph(true);
+            }
             if let Some(limit) = max_vram_bytes {
                 ep = ep.with_memory_limit(limit as usize);
-            }
-            if !cuda_option_overrides.is_empty() {
-                // Better a loud failure than a benchmark that measured
-                // something other than what it says it measured.
-                let keys: Vec<&str> = cuda_option_overrides
-                    .iter()
-                    .map(|(k, _)| k.as_str())
-                    .collect();
-                return Err(err::internal().with_cause(format!(
-                    "ort 2.0.0-rc.13 cannot apply CUDA provider options {keys:?}; \
-                     use the typed ep::CUDA builder instead"
-                )));
             }
             // `fail_silently` is the whole fallback story: if the provider
             // refuses to register, every node runs on the built-in CPU EP and
@@ -432,7 +562,9 @@ impl OnnxSession {
     pub fn threads(&self) -> usize {
         self.threads
     }
+}
 
+impl OnnxSession {
     /// Run with inputs given by name.
     ///
     /// Outputs are returned in the order requested, not graph order, because
@@ -442,47 +574,14 @@ impl OnnxSession {
     /// Run the session.
     pub fn run(&mut self, inputs: &[Input], outputs: &[&str]) -> Result<Vec<OutputTensor>> {
         // `ort`'s `inputs!` macro needs a homogeneous argument list and we have
-        // three tensor types, so we build the name/value map explicitly. Names
+        // four tensor types, so we build the name/value map explicitly. Names
         // are checked against the graph *before* anything is allocated, so a
         // typo costs nothing and reports the real input list.
         let mut map: Vec<(&str, Value)> = Vec::with_capacity(inputs.len());
         for i in inputs {
-            let value = match i {
-                Input::F32 { name, t } => {
-                    ensure_input(&self.input_names, name)?;
-                    // Safe: F32Tensor validated data.len() == shape product at
-                    // construction, and the Vec is moved in so ORT owns it
-                    // exclusively.
-                    let v = Tensor::from_array((t.shape.clone(), t.data.clone()))
-                        .map_err(|e| err::internal().with_cause(format!("input {name}: {e}")))?;
-                    Value::from(v)
-                }
-                Input::F16 { name, t } => {
-                    ensure_input(&self.input_names, name)?;
-                    let v = Tensor::from_array((t.shape.clone(), t.data.clone()))
-                        .map_err(|e| err::internal().with_cause(format!("input {name}: {e}")))?;
-                    Value::from(v)
-                }
-                Input::I32 { name, t } => {
-                    ensure_input(&self.input_names, name)?;
-                    let v = Tensor::from_array((t.shape.clone(), t.data.clone()))
-                        .map_err(|e| err::internal().with_cause(format!("input {name}: {e}")))?;
-                    Value::from(v)
-                }
-                Input::I64 { name, t } => {
-                    ensure_input(&self.input_names, name)?;
-                    let v = Tensor::from_array((t.shape.clone(), t.data.clone()))
-                        .map_err(|e| err::internal().with_cause(format!("input {name}: {e}")))?;
-                    Value::from(v)
-                }
-            };
-            let name = match i {
-                Input::F32 { name, .. }
-                | Input::F16 { name, .. }
-                | Input::I32 { name, .. }
-                | Input::I64 { name, .. } => name.as_str(),
-            };
-            map.push((name, value));
+            let name = i.name();
+            ensure_input(&self.input_names, name)?;
+            map.push((name, i.to_value()?));
         }
         for o in outputs {
             ensure_output(&self.output_names, o)?;
