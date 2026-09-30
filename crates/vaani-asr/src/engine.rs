@@ -1,10 +1,10 @@
-//! The `AsrEngine` abstraction and the engine registry.
+﻿//! The `AsrEngine` abstraction and the engine registry.
 //!
 //! # Why a trait at all
 //!
 //! The product must be able to run more than one recogniser, and it must be
-//! able to *compare* them. §35 of the requirements asks for a benchmark that
-//! runs every installed engine on the same recording, and §36 for
+//! able to *compare* them. Â§35 of the requirements asks for a benchmark that
+//! runs every installed engine on the same recording, and Â§36 for
 //! `vaani benchmark --model <id>`. Both are impossible without an interface.
 //!
 //! The trait has exactly the methods the spec names, and no more:
@@ -15,7 +15,7 @@
 //! load, unload, transcribe, cancel, benchmark
 //! ```
 //!
-//! That restraint matters. §45 of the requirements forbids premature
+//! That restraint matters. Â§45 of the requirements forbids premature
 //! abstraction, and the failure mode of an ASR trait is particularly seductive:
 //! every new Whisper-family model tempts you to add `supports_offsets`,
 //! `supports_lm`, `supports_itn`, `supports_speaker_embedded`. Each one is a
@@ -178,30 +178,60 @@ pub trait AsrEngine: Send + Sync + std::fmt::Debug {
     /// Recognise one chunk. Times in the result are chunk-local.
     fn transcribe(&self, chunk: &AudioChunk, cancel: &CancelToken) -> Result<ChunkResult>;
 
-    /// Recognise several chunks, returning one result per input **in the same
-    /// order**.
+    /// Recognise several chunks, handing each result to `sink` **as soon as that
+    /// chunk is finished**, and returning one `Result` per input in order.
     ///
-    /// This exists so an engine can overlap the per-chunk work that does not
-    /// need the session lock -- the log-mel front end is pure CPU arithmetic on
-    /// one chunk's samples and touches nothing shared -- while still feeding
-    /// the encoder and decoder one chunk at a time. On a fourteen-minute
-    /// recording the front end is around 15% of wall time and is single-threaded
-    /// by construction, so it is the cheapest part of the pipeline to widen and
-    /// the easiest to widen without changing a single output sample.
+    /// This exists because the two things worth doing to a meeting are in
+    /// tension. The encoder is ~57% of the job and its graph declares a dynamic
+    /// batch axis, so several chunks go through one call and the per-call cost
+    /// is shared -- but a *whole-batch* call returns nothing until the last
+    /// chunk, which means the UI sits on an empty pane and then receives the
+    /// entire transcript at once. Measured: 16.0 s to 14.8 s median for the
+    /// batched encode, against streaming rows collapsing from arriving across
+    /// the job to all 115 arriving at the end.
     ///
-    /// The default implementation is exactly the loop this replaces, so an
-    /// engine with nothing to gain from it needs no change and cannot change
-    /// behaviour by accident. Order is part of the contract: the caller rebases
-    /// timestamps per chunk, so a reordered result would scramble the timeline.
-    fn transcribe_batch(
+    /// So the sink is called per chunk as the batch drains. Batched encoding and
+    /// progressive display are not in conflict; returning a `Vec` at the end
+    /// was the mistake, not batching itself.
+    ///
+    /// `sink` is called on this thread, in input order, at most once per chunk.
+    ///
+    /// A chunk that **failed** is *not* passed to the sink, because the sink has
+    /// no way to report an error of its own and a caller that kept going would
+    /// silently produce a transcript with a hole in it. The failure comes back
+    /// in the returned `Vec` at that chunk's index, which is why the returned
+    /// value is always one entry per input.
+    fn transcribe_streaming(
         &self,
         chunks: &[AudioChunk],
         cancel: &CancelToken,
+        sink: &mut dyn FnMut(usize, &ChunkResult) -> bool,
     ) -> Vec<Result<ChunkResult>> {
-        chunks
-            .iter()
-            .map(|chunk| self.transcribe(chunk, cancel))
-            .collect()
+        let mut out = Vec::with_capacity(chunks.len());
+        for (i, chunk) in chunks.iter().enumerate() {
+            if cancel.check().is_err() {
+                break;
+            }
+            let result = self.transcribe(chunk, cancel);
+            match &result {
+                Ok(r) => {
+                    if !sink(i, r) {
+                        out.push(result);
+                        break;
+                    }
+                }
+                // Not handed to the sink: see above.
+                Err(_) => {
+                    out.push(result);
+                    break;
+                }
+            }
+            out.push(result);
+        }
+        while out.len() < chunks.len() {
+            out.push(Err(vaani_core::err::cancelled()));
+        }
+        out
     }
 
     /// Equivalent to cancelling the token handed to [`AsrEngine::transcribe`].

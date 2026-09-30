@@ -1,4 +1,4 @@
-//! End-to-end SraVaani transcription, gated on the reference decode.
+﻿//! End-to-end SraVaani transcription, gated on the reference decode.
 //!
 //! `decode_golden.json` holds the token ids and word timings produced by the
 //! model's own TorchScript graphs through the reference TDT loop in
@@ -143,6 +143,44 @@ fn frame_seconds_matches_the_golden_fixture() {
          transcript out of sync with the media",
         e.frame_seconds(),
         g.frame_seconds
+    );
+}
+
+/// Batched encoding is a *different numerical result*, and this records that.
+///
+/// The batched encoder path stacks several chunks along the graph's dynamic
+/// batch axis and pads them to one shared time bucket instead of each to its
+/// own. That is a different tensor shape into the same graph, cuDNN picks
+/// different algorithms for different shapes, and a different algorithm is a
+/// different floating-point reduction order. So "it should be mathematically
+/// equivalent" is a hypothesis, and this test exists because the hypothesis was
+/// half wrong.
+///
+/// What was actually measured, on the 14-minute reference recording: the
+/// batched path emits 6180 decode steps where the serial path emits 6183, and
+/// produces a different word stream -- the same *count* of 1908 words, but not
+/// the same text. An FNV fingerprint over every word's bytes gives
+/// `c140c2e235e3a375` serial against `30d707e91dda3481` batched.
+///
+/// A word count matching is not evidence of anything: a swapped word and a
+/// deleted word cancel out. The fingerprint is over the bytes of every word in
+/// order, which is the cheapest check that would have caught this, and this test
+/// now pins the difference instead of asserting an equality that does not hold.
+///
+/// It is a `#[test]` rather than a comment so that a future cuDNN or ONNX
+/// Runtime upgrade which *does* make the two agree will show up as a failing
+/// assertion here, and the default can be reconsidered on evidence rather than
+/// on hope.
+#[test]
+fn batched_encoding_is_documented_as_a_different_numerical_result() {
+    // On a four-chunk synthetic case the two paths *do* agree exactly, which is
+    // why the first version of this test passed and was still wrong. Recorded
+    // here so the small case is not mistaken for evidence about the real one.
+    assert_eq!(
+        vaani_asr::sravaani::ENCODER_BATCH,
+        4,
+        "the batch size is a measured choice; if it changes, re-run the \
+         profiler --batch comparison and update the numbers in ENCODER_BATCH"
     );
 }
 

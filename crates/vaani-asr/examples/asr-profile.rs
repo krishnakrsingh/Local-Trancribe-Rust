@@ -305,6 +305,7 @@ fn run() -> Result<(), String> {
     for r in 1..=args.repeat {
         let (mut enc_total, mut dec_total, mut front_total) = (0u64, 0u64, 0u64);
         let (mut steps_total, mut words_total) = (0usize, 0usize);
+        let mut fingerprint: u64 = 1469598103934665603;
         let t0 = Instant::now();
 
         // Build the chunk list once, outside the timing loop. Slicing the buffer
@@ -320,11 +321,12 @@ fn run() -> Result<(), String> {
             .collect();
 
         if args.batch {
-            // The production path: one call for the whole job, which is what
-            // lets the engine overlap the per-chunk front ends.
-            let mut results = engine.transcribe_batch(&inputs, &cancel);
-            for (i, res) in results.drain(..).enumerate() {
-                let res = res.map_err(|e| format!("transcribe: {}", e.debug_chain()))?;
+            // The production path: the batched encoder with a per-chunk sink,
+            // which is exactly what the ASR stage does.
+            let mut results: Vec<std::result::Result<(), String>> =
+                Vec::with_capacity(inputs.len());
+            engine.transcribe_streaming(&inputs, &cancel, &mut |i, result| {
+                let res = result;
                 if args.per_chunk {
                     let c = &chunks[i];
                     println!(
@@ -342,7 +344,15 @@ fn run() -> Result<(), String> {
                 front_total += res.timings.frontend_ms;
                 steps_total += res.timings.decode_steps;
                 words_total += res.segments.iter().map(|s| s.words.len()).sum::<usize>();
-            }
+                for w in res.segments.iter().flat_map(|s| s.words.iter()) {
+                    for b in w.text.as_bytes() {
+                        fingerprint ^= u64::from(*b);
+                        fingerprint = fingerprint.wrapping_mul(1099511628211);
+                    }
+                }
+                results.push(Ok(()));
+                true
+            });
         } else {
             for c in &chunks {
                 let slice = buffer.slice_mono(c.start, c.end);
@@ -369,6 +379,12 @@ fn run() -> Result<(), String> {
                 front_total += res.timings.frontend_ms;
                 steps_total += res.timings.decode_steps;
                 words_total += res.segments.iter().map(|s| s.words.len()).sum::<usize>();
+                for w in res.segments.iter().flat_map(|s| s.words.iter()) {
+                    for b in w.text.as_bytes() {
+                        fingerprint ^= u64::from(*b);
+                        fingerprint = fingerprint.wrapping_mul(1099511628211);
+                    }
+                }
             }
         }
         let wall = t0.elapsed().as_secs_f64();
@@ -382,7 +398,7 @@ fn run() -> Result<(), String> {
             .active_provider()
             .map_or("unknown", vaani_inference::ActiveProvider::as_str);
         println!(
-            "run {r:<3} wall {wall:7.2}s  rtf {rtf:6.4}  front {front_total:5}ms  enc {enc_total:5}ms  dec {dec_total:6}ms  steps {steps_total:5}  {words_total:5} words  {per_step:5.2}us/step  on {prov}"
+            "run {r:<3} wall {wall:7.2}s  rtf {rtf:6.4}  front {front_total:5}ms  enc {enc_total:5}ms  dec {dec_total:6}ms  steps {steps_total:5}  {words_total:5} words  {per_step:5.2}us/step  fp={fingerprint:016x}  on {prov}"
         );
         let cand = (
             rtf,

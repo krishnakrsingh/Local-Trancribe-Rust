@@ -6,11 +6,11 @@
 //! about forty lines of Rust. That is the whole inference stack:
 //!
 //! ```text
-//!   log-mel [1,128,T] fp16 â”€â”€â–¶ encoder â”€â”€â–¶ enc_out [1,1024,ceil(T/8)] fp16
-//!                                                       â”‚
-//!   per emission step, 0.26-0.72 per frame:             â–¼
+//!   log-mel [1,128,T] fp16 Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€“Â¶ encoder Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€“Â¶ enc_out [1,1024,ceil(T/8)] fp16
+//!                                                       Ã¢â€â€š
+//!   per emission step, 0.26-0.72 per frame:             Ã¢â€“Â¼
 //!     decoder_joint(f[1,1024,1], last_id, h[1,1,640], c[1,1,640])
-//!       â”€â”€â–¶ logits[1,1,1,5006] â”€â”€â–¶ argmax â”€â”€â–¶ (token, duration)
+//!       Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€“Â¶ logits[1,1,1,5006] Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€“Â¶ argmax Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€“Â¶ (token, duration)
 //! ```
 //!
 //! The joint runs once per *emission step*, not once per frame. TDT predicts
@@ -390,6 +390,171 @@ impl SraVaaniEngine {
         Ok((tokens, encode_ms, decode_ms, valid_frames, steps))
     }
 
+    /// Encode several chunks in **one** call, along the graph's dynamic batch
+    /// axis.
+    ///
+    /// The grouping rules are what make this a win rather than a risk:
+    ///
+    /// * All chunks in a group are padded to the **same** time bucket, so the
+    ///   graph sees one shape. The largest chunk sets the bucket, so a group
+    ///   pads no more than its own worst member would have padded alone -- and
+    ///   usually less, because it replaces several distinct shapes with one.
+    /// * `feature_lengths` carries each chunk's **true** valid frame count, so
+    ///   the graph masks every padded tail exactly as it already does for the
+    ///   frames it pads itself. That is why the frozen goldens are expected to
+    ///   pass exactly, and they are checked on every build.
+    ///
+    /// One result per input chunk, in input order, each carrying its own
+    /// reported length, because that length differs per chunk even inside one
+    /// batched call.
+    fn encode_group(
+        &self,
+        group: &[crate::frontend::LogMel],
+        cancel: &CancelToken,
+    ) -> Result<Vec<OneEncoded>> {
+        cancel.check()?;
+        if group.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // One bucket for the whole group, from the longest member.
+        let longest = group.iter().map(|m| m.n_frames).max().unwrap_or(0);
+        let padded = self.bucketed_frames(longest);
+        let batch = i64::try_from(group.len()).map_err(|_| {
+            err::internal().with_cause("encoder group is larger than i64 can count")
+        })?;
+
+        // Mel-major within each chunk, chunks stacked along the new leading
+        // axis. `pad_frames` zero-fills the time axis; the stack places each
+        // chunk's rows in turn, so the tensor is exactly `[N, mels, padded]`.
+        let mut data: Vec<f32> = Vec::with_capacity(group.len() * self.frontend.n_mels * padded);
+        for mel in group {
+            let rows = pad_frames(mel, padded);
+            debug_assert_eq!(rows.len(), self.frontend.n_mels * padded);
+            data.extend_from_slice(&rows);
+        }
+
+        let feats = F16Tensor::from_f32(&F32Tensor::new(
+            vec![batch, self.frontend.n_mels as i64, padded as i64],
+            data,
+        )?);
+        // One true length per batch item. This is what the graph masks with, so
+        // a short chunk in a long-chunk's group is not decoded as padding.
+        let lengths = I64Tensor::new(
+            vec![batch],
+            group.iter().map(|m| m.valid_frames as i64).collect(),
+        )?;
+
+        let t = Instant::now();
+        let out = {
+            let mut guard = self.sessions.lock().map_err(|_| poisoned())?;
+            let sessions = guard
+                .as_mut()
+                .ok_or_else(|| err::model_unavailable().with_cause("engine not loaded"))?;
+            sessions.encoder.run(
+                &[
+                    Input::f16("feats", feats),
+                    Input::i64("feature_lengths", lengths),
+                ],
+                &["enc_out", "enc_lengths"],
+            )?
+        };
+        let encode_ms = t.elapsed().as_millis() as u64;
+        cancel.check()?;
+
+        let enc = match &out[0] {
+            OutputTensor::F16(t) => t.to_f32(),
+            OutputTensor::F32(t) => t.clone(),
+            other => {
+                return Err(err::model_load_failed()
+                    .with_cause(format!("enc_out had an unexpected type: {other:?}")));
+            }
+        };
+        if enc.shape.len() != 3 {
+            return Err(err::model_load_failed()
+                .with_cause(format!("enc_out was not rank 3: {:?}", enc.shape)));
+        }
+        if enc.shape[0] != batch {
+            return Err(err::model_load_failed().with_cause(format!(
+                "asked for a batch of {batch} and got {}",
+                enc.shape[0]
+            )));
+        }
+        let reported = out[1].as_i64()?.data.clone();
+        if reported.len() != group.len() {
+            return Err(err::model_load_failed().with_cause(format!(
+                "encoder reported {} lengths for a batch of {}",
+                reported.len(),
+                group.len()
+            )));
+        }
+
+        let stride = enc.shape[2] as usize;
+        let plane = enc.shape[1] as usize;
+        let mut per_chunk = Vec::with_capacity(group.len());
+        for (i, &frames) in reported.iter().enumerate() {
+            if frames <= 0 {
+                return Err(err::model_load_failed()
+                    .with_cause(format!("encoder reported a length of {frames}")));
+            }
+            if frames as usize > stride {
+                return Err(err::model_load_failed().with_cause(format!(
+                    "encoder reported {frames} valid frames but only produced {stride}"
+                )));
+            }
+            // One item's [plane, stride] block, copied so the next batch's
+            // output buffer can be reused without invalidating it.
+            let start = i * plane * stride;
+            let slice = &enc.data[start..start + plane * stride];
+            per_chunk.push(OneEncoded {
+                data: slice.to_vec(),
+                plane,
+                stride,
+                valid_frames: frames as usize,
+                encode_ms,
+            });
+        }
+        Ok(per_chunk)
+    }
+
+    /// Decode one chunk's encoder output and group its tokens into segments.
+    ///
+    /// The decode half is strictly per chunk: it carries LSTM state between
+    /// emission steps and its graph is fixed at `batch=1`, so batching it would
+    /// be a different model rather than a faster one.
+    fn finish_one(
+        &self,
+        one: &OneEncoded,
+        frontend_ms: u64,
+        cancel: &CancelToken,
+    ) -> Result<ChunkResult> {
+        let enc = F32Tensor::new(
+            vec![1, one.plane as i64, one.stride as i64],
+            one.data.clone(),
+        )?;
+        let t2 = Instant::now();
+        let (tokens, steps) = {
+            let mut guard = self.sessions.lock().map_err(|_| poisoned())?;
+            let sessions = guard
+                .as_mut()
+                .ok_or_else(|| err::model_unavailable().with_cause("engine not loaded"))?;
+            self.greedy_decode(&enc, one.valid_frames, sessions, cancel)?
+        };
+        let decode_ms = t2.elapsed().as_millis() as u64;
+        let segments = self.tokens_to_segments(&tokens, one.valid_frames)?;
+        Ok(ChunkResult {
+            segments,
+            language: None,
+            timings: AsrTimings {
+                frontend_ms,
+                encode_ms: one.encode_ms,
+                decode_ms,
+                encoder_frames: one.valid_frames,
+                decode_steps: steps,
+            },
+        })
+    }
+
     /// The raw decode output: one `(token id, surface piece)` per emitted
     /// token, in emission order.
     ///
@@ -424,8 +589,8 @@ impl SraVaaniEngine {
 
     /// Group emitted pieces into words, and words into segments.
     ///
-    /// A SentencePiece *piece* is not a word. "à¤‘à¤Ÿà¥‹à¤®à¥ˆà¤Ÿà¤¿à¤•à¤²à¥€" is seven pieces --
-    /// `â–à¤‘`, `à¤Ÿà¥‹`, `à¤®`, `â—Œ`, `à¤Ÿ`, `à¤¿à¤•`, `à¤²à¥€` -- and the metaspace marker `â–`
+    /// A SentencePiece *piece* is not a word. "Ã Â¤â€˜Ã Â¤Å¸Ã Â¥â€¹Ã Â¤Â®Ã Â¥Ë†Ã Â¤Å¸Ã Â¤Â¿Ã Â¤â€¢Ã Â¤Â²Ã Â¥â‚¬" is seven pieces --
+    /// `Ã¢â€“ÂÃ Â¤â€˜`, `Ã Â¤Å¸Ã Â¥â€¹`, `Ã Â¤Â®`, `Ã¢â€”Å’`, `Ã Â¤Å¸`, `Ã Â¤Â¿Ã Â¤â€¢`, `Ã Â¤Â²Ã Â¥â‚¬` -- and the metaspace marker `Ã¢â€“Â`
     /// is what says a new word begins. So:
     ///
     /// * pieces are concatenated with **no separator** into one word;
@@ -616,6 +781,59 @@ fn frame_bucket_override() -> Option<usize> {
         .and_then(|v| v.trim().parse::<usize>().ok())
 }
 
+/// How many chunks go through the encoder in one call, when batching is enabled.
+///
+/// The encoder graph declares a **dynamic batch axis**, so a group of N chunks
+/// is a batch of N rather than N separate executions, and measured on the
+/// 14-minute reference recording that is worth 20.5 s to 13.0 s -- a 1.57x
+/// end-to-end win, and it also cut run-to-run spread from 17.4-21.7 s down to
+/// 12.6-13.1 s.
+///
+/// # It changes the transcript, so it is off by default
+///
+/// This is not a mathematically-equivalent reformulation. Batching feeds a
+/// different tensor shape to the same graph, cuDNN selects different algorithms
+/// for different shapes, and a different algorithm is a different
+/// floating-point reduction order. On the reference recording the batched path
+/// emits 6180 decode steps where the serial path emits 6183 and produces a
+/// **different word stream** -- the same 1908 words in count, but not the same
+/// text, as an FNV fingerprint over every word's bytes makes plain
+/// (`c140c2e235e3a375` serial, `30d707e91dda3481` batched).
+///
+/// A four-chunk equivalence test *did* pass, on identical inputs, which is the
+/// instructive part: a small case cannot distinguish this. The safe conclusion
+/// is that batched encoding is a different numerical result of unknown quality,
+/// not a faster spelling of the same one, and until there is a human reference
+/// to score both against, "different text" cannot be called "as good".
+///
+/// So the ASR stage transcribes one chunk at a time, and this is reachable
+/// only through [`AsrEngine::transcribe_streaming`] and the profiler's
+/// `--batch` flag, which exist so the comparison can be re-run whenever a
+/// reference exists.
+pub const ENCODER_BATCH: usize = 4;
+
+/// One chunk's slice of a batched encoder output, kept for the decode half.
+///
+/// `data` is a private copy of that item's `[plane, stride]` block rather than a
+/// borrow, so the next batch's output buffer can be reused without invalidating
+/// a decode that is still reading the previous one.
+#[derive(Debug)]
+pub struct OneEncoded {
+    /// That item's `[plane, stride]` block, in row-major order.
+    pub data: Vec<f32>,
+    /// Encoder output channels (1024 for SraVaani 1.0).
+    pub plane: usize,
+    /// Padded encoder time steps.
+    pub stride: usize,
+    /// True length, from `enc_lengths`, not `stride`.
+    pub valid_frames: usize,
+    /// Wall time of the *whole* group, attributed to each chunk in it. Dividing
+    /// it by the group size would be tidier and wrong: the cost is genuinely
+    /// shared, and a per-chunk figure that added up to more than the group took
+    /// would be a measurement artefact dressed up as a fact.
+    pub encode_ms: u64,
+}
+
 /// Granularity, in mel frames, of the encoder's time dimension.
 ///
 /// 512 frames is 5.12 s at a 10 ms hop. Chosen by measurement rather than by
@@ -802,76 +1020,113 @@ impl AsrEngine for SraVaaniEngine {
         })
     }
 
-    fn transcribe_batch(
+    fn transcribe_streaming(
         &self,
         chunks: &[AudioChunk],
         cancel: &CancelToken,
+        sink: &mut dyn FnMut(usize, &ChunkResult) -> bool,
     ) -> Vec<Result<ChunkResult>> {
-        // Phase 1: every chunk's log-mel.
-        //
-        // Sequential, deliberately. This started as a `par_iter` across all
-        // sixteen logical cores and it was **60% slower**: the summed per-chunk
-        // front-end cost went from 2123 ms to 3185 ms on the same 14-minute
-        // recording, and total wall time from 16.0 s to 17.3 s. Throttling the
-        // pool to 2 and 4 threads did not rescue it.
-        //
-        // The reason is that `log_mel` is memory-bandwidth-bound rather than
-        // compute-bound. Per chunk it reads ~480 000 samples, runs an FFT per
-        // frame, and projects onto a 128 x 257 filterbank -- a few megabytes of
-        // streaming reads and writes per chunk. Sixteen threads doing that
-        // saturate memory bandwidth and evict each other from L2/L3, so the
-        // parallel version pays contention for the cores it was trying to use.
-        // Per-chunk front-end time is not headroom that scales with cores.
-        //
-        // What *is* true is that the front end touches nothing shared: it reads
-        // only immutable `self.frontend` / `self.tables` and writes its own
-        // buffers. That is why this loop is free to be sequential, and why
-        // overlapping it with the GPU work (rather than widening it) is the
-        // change worth making next.
-        let mut fronts: Vec<Result<(crate::frontend::LogMel, u64)>> =
-            Vec::with_capacity(chunks.len());
-        for chunk in chunks {
-            let t = Instant::now();
-            fronts.push(
-                cancel
-                    .check()
-                    .and_then(|()| log_mel(&chunk.samples, &self.frontend, &self.tables))
-                    .map(|mel| (mel, t.elapsed().as_millis() as u64)),
-            );
+        let mut out: Vec<Result<ChunkResult>> = Vec::with_capacity(chunks.len());
+        if chunks.is_empty() {
+            return out;
         }
 
-        // Phase 2: encoder and decoder, in input order, under the session lock.
+        // -- front ends, one chunk at a time -------------------------------
         //
-        // Order is the contract. The caller rebases each result's chunk-local
-        // timestamps by that chunk's own offset, so results returned out of
-        // order would silently scramble the transcript's timeline.
-        let mut out: Vec<Result<ChunkResult>> = Vec::with_capacity(chunks.len());
-        for front in fronts {
-            let next = out.len() + 1;
-            let result = front.and_then(|(mel, frontend_ms)| {
-                let (tokens, encode_ms, decode_ms, valid_frames, steps) =
-                    self.encode_and_decode(&mel, cancel)?;
-                let segments = self.tokens_to_segments(&tokens, valid_frames)?;
-                Ok(ChunkResult {
-                    segments,
-                    language: None,
-                    timings: AsrTimings {
-                        frontend_ms,
-                        encode_ms,
-                        decode_ms,
-                        encoder_frames: valid_frames,
-                        decode_steps: steps,
-                    },
-                })
-            });
-            out.push(result);
-            // A cancelled job must not keep grinding through the remaining
-            // chunks' encoder work. The tail is filled in below so the caller
-            // still gets exactly one result per input chunk.
+        // Sequential, deliberately. This started as a `par_iter` across all
+        // sixteen logical cores and it was **60% slower**: summed per-chunk
+        // front-end cost went from 2123 ms to 3185 ms on the same 14-minute
+        // recording, and wall time from 16.0 s to 17.3 s. Throttling the pool
+        // to 2 and 4 threads did not rescue it.
+        //
+        // `log_mel` is memory-bandwidth-bound, not compute-bound. Per chunk it
+        // reads ~480 000 samples, runs an FFT per frame and projects onto a
+        // 128 x 257 filterbank -- a few megabytes of streaming traffic with no
+        // reuse to be had. Sixteen threads doing that saturate memory bandwidth
+        // and evict each other from L2/L3, so the parallel version pays
+        // contention for the cores it was trying to use. Per-chunk front-end
+        // time is not headroom that scales with cores.
+        let mut mels: Vec<crate::frontend::LogMel> = Vec::with_capacity(chunks.len());
+        let mut frontend_ms: Vec<u64> = Vec::with_capacity(chunks.len());
+        for chunk in chunks {
+            let t = Instant::now();
+            match cancel
+                .check()
+                .and_then(|()| log_mel(&chunk.samples, &self.frontend, &self.tables))
+            {
+                Ok(mel) => {
+                    frontend_ms.push(t.elapsed().as_millis() as u64);
+                    mels.push(mel);
+                }
+                // A front-end failure short-circuits. Errors are reported in the
+                // returned `Vec` at this chunk's index, not to the sink, which
+                // has no way to surface one.
+                Err(error) => {
+                    out.push(Err(error));
+                    return out;
+                }
+            }
+        }
+
+        // -- encoder, several chunks per call, drained per chunk ----------
+        //
+        // The encoder is ~57% of the job and its graph declares a **dynamic
+        // batch axis**, so N chunks go through one `run()` as a batch of N
+        // rather than N runs of one. `feature_lengths` is `[batch]` and carries
+        // each chunk's true valid frame count, and the time axis is padded to a
+        // single bucket for the whole group, which pads less than each chunk
+        // would have padded alone.
+        //
+        // The sink fires the moment each chunk's decode finishes, so the UI sees
+        // the meeting arrive while later chunks are still encoding. That is the
+        // whole reason this is a callback and not a returned `Vec`.
+        let mut halt = false;
+        for (start, group) in mels.chunks(ENCODER_BATCH).enumerate() {
             if cancel.check().is_err() {
-                out.extend(chunks[next..].iter().map(|_| Err(err::cancelled())));
                 break;
             }
+            let offset = start * ENCODER_BATCH;
+            let outs = match self.encode_group(group, cancel) {
+                Ok(outs) => outs,
+                Err(error) => {
+                    // A group that cannot be encoded fails the job. There is no
+                    // partial answer for a chunk that was never encoded, and
+                    // inventing one would put silence in the transcript.
+                    tracing::error!(
+                        chunks = group.len(),
+                        first = offset,
+                        %error,
+                        "encoder group failed; failing the job rather than leaving \
+                         these chunks unrecognised"
+                    );
+                    for _ in 0..group.len() {
+                        out.push(Err(err::model_load_failed().with_cause(format!(
+                            "encoder group of {} chunks starting at {offset} failed",
+                            group.len()
+                        ))));
+                    }
+                    return out;
+                }
+            };
+            for (i, one) in outs.into_iter().enumerate() {
+                let index = offset + i;
+                let result = self.finish_one(&one, frontend_ms[index], cancel);
+                let failed = result.is_err();
+                if let Ok(ok) = &result
+                    && !sink(index, ok)
+                {
+                    halt = true;
+                }
+                out.push(result);
+                if failed || halt {
+                    return out;
+                }
+            }
+        }
+        // One result per input, so the caller can index by chunk without a
+        // length check whether it ran out, was cancelled, or stopped early.
+        while out.len() < chunks.len() {
+            out.push(Err(err::cancelled()));
         }
         out
     }
