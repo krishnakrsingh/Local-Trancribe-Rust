@@ -5,7 +5,7 @@
 //! [`AudioBuffer::slice_mono`](vaani_core::media::AudioBuffer::slice_mono),
 //! transcribes each chunk with an
 //! [`AsrEngine`](vaani_asr::engine::AsrEngine), and accumulates with
-//! [`Transcript::push_chunk`](vaani_core::Transcript::push_chunk) — the single
+//! [`Transcript::push_chunk`](vaani_core::Transcript::push_chunk) â€” the single
 //! rebase point where chunk-local times become media times. Nothing here adds
 //! a chunk offset to a [`Time`](vaani_core::Time).
 //!
@@ -116,6 +116,21 @@ impl PipelineStage for AsrStage {
         // Words already handed to the store, so the next partial is only worth
         // writing once enough new ones exist to see. See the streaming block.
         let mut streamed_words = 0usize;
+        // One chunk at a time, deliberately.
+        //
+        // `AsrEngine::transcribe_batch` exists and is correct, and calling it
+        // here was tried: it made the job *finish sooner in one sense and much
+        // later in the one that matters*. Because a batch call returns only when
+        // every chunk is done, the partial-transcript writes below all happened
+        // after the last chunk, and the UI sat on an empty pane for the entire
+        // run and then received the whole transcript in one step. The ship
+        // gate's streaming assertion caught it -- rows went from arriving
+        // progressively across the job to 115 arriving at the very end.
+        //
+        // Watching the words appear is the feature; finishing four seconds
+        // sooner is not a trade worth it. The batch path stays on the engine
+        // where the profiler uses it, and is the hook for the change that is
+        // actually worth making: overlapping the front end with the GPU.
         for (index, chunk) in chunks.iter().enumerate() {
             ctx.check()?;
             let (samples, sample_rate) = {
@@ -152,8 +167,8 @@ impl PipelineStage for AsrStage {
             // diarization yet, so speakers come later) and persist it. The UI
             // reloads on TranscriptReady, which the backend emits when the
             // stored word count grows. A failed partial write must not fail
-            // the job — the final store stage writes the complete transcript
-            // regardless — so errors are logged and swallowed here.
+            // the job â€” the final store stage writes the complete transcript
+            // regardless â€” so errors are logged and swallowed here.
             //
             // Throttled by new words, because `replace_transcript` rewrites
             // every row so far. Streaming on every chunk makes the write volume
@@ -268,8 +283,8 @@ mod tests {
     /// A2's known failure, `times.no_time_precedes_the_origin`, reproduced
     /// verbatim at the stage that owned it.
     ///
-    /// `AsrStage::run` used to plan chunks with `audio.duration()` — a
-    /// *length* — while the `SpeechTimeline` holds *absolute* times, and clamp
+    /// `AsrStage::run` used to plan chunks with `audio.duration()` â€” a
+    /// *length* â€” while the `SpeechTimeline` holds *absolute* times, and clamp
     /// the accumulated transcript to that same length. For a buffer that starts
     /// at **+5 minutes** both were wrong by exactly the origin: the chunker's
     /// leading pad was clamped to 0 and the transcript's times came back before
@@ -281,7 +296,7 @@ mod tests {
     fn a_buffer_that_does_not_start_at_zero_still_produces_absolute_times() {
         let origin = 300_000i64;
         let audio = AudioBuffer::mono(vec![0.5; 16_000 * 90], 16_000, Time(origin));
-        // Absolute speech, +5 minutes in — exactly what the conformance harness
+        // Absolute speech, +5 minutes in â€” exactly what the conformance harness
         // seeds, and the shape a resumed job or a slice produces.
         let speech = SpeechTimeline {
             segments: vec![SpeechSegment {

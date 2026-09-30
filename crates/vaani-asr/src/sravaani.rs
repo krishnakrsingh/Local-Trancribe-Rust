@@ -1,4 +1,4 @@
-//! SraVaani 1.0: a FastConformer encoder with a hybrid TDT transducer decoder.
+﻿//! SraVaani 1.0: a FastConformer encoder with a hybrid TDT transducer decoder.
 //!
 //! # Architecture as exported
 //!
@@ -6,11 +6,11 @@
 //! about forty lines of Rust. That is the whole inference stack:
 //!
 //! ```text
-//!   log-mel [1,128,T] fp16 ──▶ encoder ──▶ enc_out [1,1024,ceil(T/8)] fp16
-//!                                                       │
-//!   per emission step, 0.26-0.72 per frame:             ▼
+//!   log-mel [1,128,T] fp16 â”€â”€â–¶ encoder â”€â”€â–¶ enc_out [1,1024,ceil(T/8)] fp16
+//!                                                       â”‚
+//!   per emission step, 0.26-0.72 per frame:             â–¼
 //!     decoder_joint(f[1,1024,1], last_id, h[1,1,640], c[1,1,640])
-//!       ──▶ logits[1,1,1,5006] ──▶ argmax ──▶ (token, duration)
+//!       â”€â”€â–¶ logits[1,1,1,5006] â”€â”€â–¶ argmax â”€â”€â–¶ (token, duration)
 //! ```
 //!
 //! The joint runs once per *emission step*, not once per frame. TDT predicts
@@ -358,6 +358,38 @@ impl SraVaaniEngine {
         Ok((tokens, steps))
     }
 
+    /// The half of [`AsrEngine::transcribe`] that needs the session lock:
+    /// encoder, then decoder.
+    ///
+    /// Split out so [`AsrEngine::transcribe_batch`] can compute the front end
+    /// for many chunks at once and then walk these one at a time. There is
+    /// exactly one place in this file that holds the session lock across real
+    /// work, and it is here -- which is what makes the batch path's "the
+    /// GPU half stays serial" a structural fact rather than a convention that a
+    /// later edit can quietly break.
+    #[allow(clippy::type_complexity)]
+    fn encode_and_decode(
+        &self,
+        mel: &crate::frontend::LogMel,
+        cancel: &CancelToken,
+    ) -> Result<(Vec<EmittedToken>, u64, u64, usize, usize)> {
+        let mut guard = self.sessions.lock().map_err(|_| poisoned())?;
+        let sessions = guard
+            .as_mut()
+            .ok_or_else(|| err::model_unavailable().with_cause("engine not loaded"))?;
+
+        let t1 = Instant::now();
+        let (enc, valid_frames) = self.encode(sessions, mel, cancel)?;
+        let encode_ms = t1.elapsed().as_millis() as u64;
+        cancel.check()?;
+
+        let t2 = Instant::now();
+        let (tokens, steps) = self.greedy_decode(&enc, valid_frames, sessions, cancel)?;
+        let decode_ms = t2.elapsed().as_millis() as u64;
+
+        Ok((tokens, encode_ms, decode_ms, valid_frames, steps))
+    }
+
     /// The raw decode output: one `(token id, surface piece)` per emitted
     /// token, in emission order.
     ///
@@ -392,8 +424,8 @@ impl SraVaaniEngine {
 
     /// Group emitted pieces into words, and words into segments.
     ///
-    /// A SentencePiece *piece* is not a word. "ऑटोमैटिकली" is seven pieces --
-    /// `▁ऑ`, `टो`, `म`, `◌`, `ट`, `िक`, `ली` -- and the metaspace marker `▁`
+    /// A SentencePiece *piece* is not a word. "à¤‘à¤Ÿà¥‹à¤®à¥ˆà¤Ÿà¤¿à¤•à¤²à¥€" is seven pieces --
+    /// `â–à¤‘`, `à¤Ÿà¥‹`, `à¤®`, `â—Œ`, `à¤Ÿ`, `à¤¿à¤•`, `à¤²à¥€` -- and the metaspace marker `â–`
     /// is what says a new word begins. So:
     ///
     /// * pieces are concatenated with **no separator** into one word;
@@ -751,19 +783,8 @@ impl AsrEngine for SraVaaniEngine {
         let frontend_ms = t0.elapsed().as_millis() as u64;
         cancel.check()?;
 
-        let mut guard = self.sessions.lock().map_err(|_| poisoned())?;
-        let sessions = guard
-            .as_mut()
-            .ok_or_else(|| err::model_unavailable().with_cause("engine not loaded"))?;
-
-        let t1 = Instant::now();
-        let (enc, valid_frames) = self.encode(sessions, &mel, cancel)?;
-        let encode_ms = t1.elapsed().as_millis() as u64;
-        cancel.check()?;
-
-        let t2 = Instant::now();
-        let (tokens, steps) = self.greedy_decode(&enc, valid_frames, sessions, cancel)?;
-        let decode_ms = t2.elapsed().as_millis() as u64;
+        let (tokens, encode_ms, decode_ms, valid_frames, steps) =
+            self.encode_and_decode(&mel, cancel)?;
         cancel.check()?;
 
         let segments = self.tokens_to_segments(&tokens, valid_frames)?;
@@ -779,6 +800,80 @@ impl AsrEngine for SraVaaniEngine {
                 decode_steps: steps,
             },
         })
+    }
+
+    fn transcribe_batch(
+        &self,
+        chunks: &[AudioChunk],
+        cancel: &CancelToken,
+    ) -> Vec<Result<ChunkResult>> {
+        // Phase 1: every chunk's log-mel.
+        //
+        // Sequential, deliberately. This started as a `par_iter` across all
+        // sixteen logical cores and it was **60% slower**: the summed per-chunk
+        // front-end cost went from 2123 ms to 3185 ms on the same 14-minute
+        // recording, and total wall time from 16.0 s to 17.3 s. Throttling the
+        // pool to 2 and 4 threads did not rescue it.
+        //
+        // The reason is that `log_mel` is memory-bandwidth-bound rather than
+        // compute-bound. Per chunk it reads ~480 000 samples, runs an FFT per
+        // frame, and projects onto a 128 x 257 filterbank -- a few megabytes of
+        // streaming reads and writes per chunk. Sixteen threads doing that
+        // saturate memory bandwidth and evict each other from L2/L3, so the
+        // parallel version pays contention for the cores it was trying to use.
+        // Per-chunk front-end time is not headroom that scales with cores.
+        //
+        // What *is* true is that the front end touches nothing shared: it reads
+        // only immutable `self.frontend` / `self.tables` and writes its own
+        // buffers. That is why this loop is free to be sequential, and why
+        // overlapping it with the GPU work (rather than widening it) is the
+        // change worth making next.
+        let mut fronts: Vec<Result<(crate::frontend::LogMel, u64)>> =
+            Vec::with_capacity(chunks.len());
+        for chunk in chunks {
+            let t = Instant::now();
+            fronts.push(
+                cancel
+                    .check()
+                    .and_then(|()| log_mel(&chunk.samples, &self.frontend, &self.tables))
+                    .map(|mel| (mel, t.elapsed().as_millis() as u64)),
+            );
+        }
+
+        // Phase 2: encoder and decoder, in input order, under the session lock.
+        //
+        // Order is the contract. The caller rebases each result's chunk-local
+        // timestamps by that chunk's own offset, so results returned out of
+        // order would silently scramble the transcript's timeline.
+        let mut out: Vec<Result<ChunkResult>> = Vec::with_capacity(chunks.len());
+        for front in fronts {
+            let next = out.len() + 1;
+            let result = front.and_then(|(mel, frontend_ms)| {
+                let (tokens, encode_ms, decode_ms, valid_frames, steps) =
+                    self.encode_and_decode(&mel, cancel)?;
+                let segments = self.tokens_to_segments(&tokens, valid_frames)?;
+                Ok(ChunkResult {
+                    segments,
+                    language: None,
+                    timings: AsrTimings {
+                        frontend_ms,
+                        encode_ms,
+                        decode_ms,
+                        encoder_frames: valid_frames,
+                        decode_steps: steps,
+                    },
+                })
+            });
+            out.push(result);
+            // A cancelled job must not keep grinding through the remaining
+            // chunks' encoder work. The tail is filled in below so the caller
+            // still gets exactly one result per input chunk.
+            if cancel.check().is_err() {
+                out.extend(chunks[next..].iter().map(|_| Err(err::cancelled())));
+                break;
+            }
+        }
+        out
     }
 
     fn benchmark(&self, cancel: &CancelToken) -> Result<AsrTimings> {

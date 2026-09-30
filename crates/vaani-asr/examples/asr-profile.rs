@@ -1,4 +1,4 @@
-//! SraVaani performance profile: where the time actually goes, on the device
+﻿//! SraVaani performance profile: where the time actually goes, on the device
 //! that is actually present.
 //!
 //! The pipeline's end-to-end number is an average over four very different
@@ -31,6 +31,7 @@ struct Args {
     fixed_chunk_s: Option<f64>,
     chunk_target_ms: Option<i64>,
     ab: bool,
+    batch: bool,
 }
 
 fn parse() -> Result<Args, String> {
@@ -41,6 +42,7 @@ fn parse() -> Result<Args, String> {
     let mut fixed_chunk_s: Option<f64> = None;
     let mut chunk_target_ms: Option<i64> = None;
     let mut ab = false;
+    let mut batch = false;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -50,6 +52,10 @@ fn parse() -> Result<Args, String> {
             }
             "--per-chunk" => per_chunk = true,
             "--ab" => ab = true,
+            // One `transcribe_batch` call for the whole job, which is what
+            // production does. Without this flag the profiler measures the
+            // serial per-chunk loop and cannot see the front-end change at all.
+            "--batch" => batch = true,
             "--chunk-target-ms" => {
                 chunk_target_ms = Some(
                     it.next()
@@ -94,6 +100,7 @@ fn parse() -> Result<Args, String> {
         fixed_chunk_s,
         chunk_target_ms,
         ab,
+        batch,
     })
 }
 
@@ -299,31 +306,70 @@ fn run() -> Result<(), String> {
         let (mut enc_total, mut dec_total, mut front_total) = (0u64, 0u64, 0u64);
         let (mut steps_total, mut words_total) = (0usize, 0usize);
         let t0 = Instant::now();
-        for c in &chunks {
-            let slice = buffer.slice_mono(c.start, c.end);
-            if slice.is_empty() {
-                continue;
+
+        // Build the chunk list once, outside the timing loop. Slicing the buffer
+        // is memcpy, not speech recognition, and leaving it inside made the
+        // front-end figure include work the engine does not do.
+        let inputs: Vec<AudioChunk> = chunks
+            .iter()
+            .map(|c| {
+                let slice = buffer.slice_mono(c.start, c.end);
+                AudioChunk::new(slice, 16_000, c.start)
+            })
+            .filter(|c| !c.samples.is_empty())
+            .collect();
+
+        if args.batch {
+            // The production path: one call for the whole job, which is what
+            // lets the engine overlap the per-chunk front ends.
+            let mut results = engine.transcribe_batch(&inputs, &cancel);
+            for (i, res) in results.drain(..).enumerate() {
+                let res = res.map_err(|e| format!("transcribe: {}", e.debug_chain()))?;
+                if args.per_chunk {
+                    let c = &chunks[i];
+                    println!(
+                        "   chunk {:>7.1}s  frames {:6}  enc {:6}ms  dec {:6}ms  steps {:5}  words {:4}",
+                        (c.end.as_millis() - c.start.as_millis()) as f64 / 1000.0,
+                        ((c.end.as_millis() - c.start.as_millis()) as f64 / 10.0).round() as i64,
+                        res.timings.encode_ms,
+                        res.timings.decode_ms,
+                        res.timings.decode_steps,
+                        res.segments.iter().map(|s| s.words.len()).sum::<usize>(),
+                    );
+                }
+                enc_total += res.timings.encode_ms;
+                dec_total += res.timings.decode_ms;
+                front_total += res.timings.frontend_ms;
+                steps_total += res.timings.decode_steps;
+                words_total += res.segments.iter().map(|s| s.words.len()).sum::<usize>();
             }
-            let chunk = AudioChunk::new(slice, 16_000, c.start);
-            let res = engine
-                .transcribe(&chunk, &cancel)
-                .map_err(|e| format!("transcribe: {}", e.debug_chain()))?;
-            if args.per_chunk {
-                println!(
-                    "   chunk {:>7.1}s  frames {:6}  enc {:6}ms  dec {:6}ms  steps {:5}  words {:4}",
-                    (c.end.as_millis() - c.start.as_millis()) as f64 / 1000.0,
-                    ((c.end.as_millis() - c.start.as_millis()) as f64 / 10.0).round() as i64,
-                    res.timings.encode_ms,
-                    res.timings.decode_ms,
-                    res.timings.decode_steps,
-                    res.segments.iter().map(|s| s.words.len()).sum::<usize>(),
-                );
+        } else {
+            for c in &chunks {
+                let slice = buffer.slice_mono(c.start, c.end);
+                if slice.is_empty() {
+                    continue;
+                }
+                let chunk = AudioChunk::new(slice, 16_000, c.start);
+                let res = engine
+                    .transcribe(&chunk, &cancel)
+                    .map_err(|e| format!("transcribe: {}", e.debug_chain()))?;
+                if args.per_chunk {
+                    println!(
+                        "   chunk {:>7.1}s  frames {:6}  enc {:6}ms  dec {:6}ms  steps {:5}  words {:4}",
+                        (c.end.as_millis() - c.start.as_millis()) as f64 / 1000.0,
+                        ((c.end.as_millis() - c.start.as_millis()) as f64 / 10.0).round() as i64,
+                        res.timings.encode_ms,
+                        res.timings.decode_ms,
+                        res.timings.decode_steps,
+                        res.segments.iter().map(|s| s.words.len()).sum::<usize>(),
+                    );
+                }
+                enc_total += res.timings.encode_ms;
+                dec_total += res.timings.decode_ms;
+                front_total += res.timings.frontend_ms;
+                steps_total += res.timings.decode_steps;
+                words_total += res.segments.iter().map(|s| s.words.len()).sum::<usize>();
             }
-            enc_total += res.timings.encode_ms;
-            dec_total += res.timings.decode_ms;
-            front_total += res.timings.frontend_ms;
-            steps_total += res.timings.decode_steps;
-            words_total += res.segments.iter().map(|s| s.words.len()).sum::<usize>();
         }
         let wall = t0.elapsed().as_secs_f64();
         let rtf = wall / audio_s;

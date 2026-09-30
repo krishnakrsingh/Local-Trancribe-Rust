@@ -178,6 +178,32 @@ pub trait AsrEngine: Send + Sync + std::fmt::Debug {
     /// Recognise one chunk. Times in the result are chunk-local.
     fn transcribe(&self, chunk: &AudioChunk, cancel: &CancelToken) -> Result<ChunkResult>;
 
+    /// Recognise several chunks, returning one result per input **in the same
+    /// order**.
+    ///
+    /// This exists so an engine can overlap the per-chunk work that does not
+    /// need the session lock -- the log-mel front end is pure CPU arithmetic on
+    /// one chunk's samples and touches nothing shared -- while still feeding
+    /// the encoder and decoder one chunk at a time. On a fourteen-minute
+    /// recording the front end is around 15% of wall time and is single-threaded
+    /// by construction, so it is the cheapest part of the pipeline to widen and
+    /// the easiest to widen without changing a single output sample.
+    ///
+    /// The default implementation is exactly the loop this replaces, so an
+    /// engine with nothing to gain from it needs no change and cannot change
+    /// behaviour by accident. Order is part of the contract: the caller rebases
+    /// timestamps per chunk, so a reordered result would scramble the timeline.
+    fn transcribe_batch(
+        &self,
+        chunks: &[AudioChunk],
+        cancel: &CancelToken,
+    ) -> Vec<Result<ChunkResult>> {
+        chunks
+            .iter()
+            .map(|chunk| self.transcribe(chunk, cancel))
+            .collect()
+    }
+
     /// Equivalent to cancelling the token handed to [`AsrEngine::transcribe`].
     ///
     /// Kept as a separate method because the UI has a cancel button and a
