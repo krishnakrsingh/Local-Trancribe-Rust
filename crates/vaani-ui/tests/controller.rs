@@ -46,6 +46,7 @@ crate::ui_test!(every_job_phase_reaches_the_window_as_a_distinct_row, {
             has_transcript: false,
             cancel_requested: false,
             word_count: None,
+            device: None,
         };
         if phase == vaani_core::JobPhase::Failed {
             job.error = Some(user_facing(
@@ -87,6 +88,7 @@ crate::ui_test!(progress_is_clamped_and_never_invents_a_percentage, {
         has_transcript: false,
         cancel_requested: false,
         word_count: None,
+        device: None,
     };
     let mut high = low.clone();
     high.id = JobId::from("high");

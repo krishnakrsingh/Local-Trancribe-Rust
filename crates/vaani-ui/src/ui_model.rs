@@ -1656,6 +1656,16 @@ impl<C: JobController> UiModel<C> {
             state.jobs.running_count(),
             state.jobs.finished_count()
         ));
+        // Which device did the work, for the job on screen.
+        //
+        // Shown because the alternative is a machine with a GPU in it, a
+        // transcript that took six times as long as it should have, and nothing
+        // to explain it. Read from the *selected* job rather than "the newest
+        // one that has a device", which would report a finished job's device
+        // while you read a different file.
+        if let Some(device) = state.jobs.selected_job().and_then(|j| j.device.as_deref()) {
+            parts.push(device.to_owned());
+        }
         if let Some(last) = state.app.recent.back() {
             parts.push(last.clone());
         }

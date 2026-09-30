@@ -1386,6 +1386,7 @@ mod tests {
             has_transcript: false,
             cancel_requested: false,
             word_count: None,
+            device: None,
         }
     }
 

@@ -249,6 +249,9 @@ impl AppBackend {
                 has_transcript,
                 cancel_requested: false,
                 word_count: usize::try_from(record.word_count).ok().filter(|&w| w > 0),
+                // History is re-read from the database, which records what ran
+                // but not which device; the row says nothing rather than guess.
+                device: None,
             };
             state.order.push(record.id.clone());
             state.jobs.insert(
@@ -417,6 +420,9 @@ impl AppBackend {
             entry.summary.error = error;
             entry.summary.has_transcript = transcript.is_some();
             entry.summary.word_count = word_count;
+            if let Some(device) = &outcome.device {
+                entry.summary.device = Some(device.clone());
+            }
             ControllerEvent::JobChanged(entry.summary.clone())
         };
         self.emit(event);
@@ -555,6 +561,7 @@ impl JobController for AppBackend {
             has_transcript: false,
             cancel_requested: false,
             word_count: None,
+            device: None,
         };
         {
             let mut state = self.state.lock();

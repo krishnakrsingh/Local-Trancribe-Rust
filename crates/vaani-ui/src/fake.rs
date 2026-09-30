@@ -97,6 +97,11 @@ struct FakeState {
     reject_rename_for: Option<usize>,
     /// When set, the next `enqueue` fails with this error.
     fail_enqueue_with: Option<UserFacingError>,
+    /// The device finished jobs report, e.g. `CUDA-accelerated`.
+    ///
+    /// Set rather than hardcoded so a test can prove the footer says *nothing*
+    /// when nothing ran, and the right thing when something did.
+    device: Option<String>,
     /// One cancellation token per running job, so `cancel` reaches the worker
     /// rather than only the UI. A fake that showed "Cancelling" and then carried
     /// on running would be testing nothing.
@@ -253,6 +258,17 @@ impl FakeController {
         self.state.lock().reject_rename_for = Some(speaker);
     }
 
+    /// Report `device` on every job from now on, as a real engine would once
+    /// it has loaded and knows which execution provider it got.
+    pub fn report_device(&self, device: Option<&str>) {
+        self.state.lock().device = device.map(str::to_owned);
+    }
+
+    /// Apply the configured device to a job about to be published.
+    fn stamp_device(&self, job: &mut JobSummary) {
+        job.device = self.state.lock().device.clone();
+    }
+
     /// Every path that was enqueued, in order.
     pub fn enqueued_paths(&self) -> Vec<PathBuf> {
         self.state.lock().enqueued.clone()
@@ -349,6 +365,14 @@ impl JobController for FakeController {
             let id = JobId::from(format!("sample-job-{}", state.next_id));
             state.next_id += 1;
             let job = summary(&id, input, JobPhase::Queued);
+            let job = JobSummary {
+                // Stamped before it is published, the way a real engine does:
+                // the provider is known from the moment the engine loads, not
+                // later. Publishing `None` first would leave the selected job
+                // claiming nothing while it is the one being transcribed.
+                device: state.device.clone(),
+                ..job
+            };
             state.jobs.push(job.clone());
             state.order.push(id.clone());
             id
@@ -628,7 +652,7 @@ impl FakeController {
     }
 
     fn replace(&self, job: &JobSummary) {
-        let snapshot = {
+        let mut snapshot = {
             let mut state = self.state.lock();
             match state.jobs.iter_mut().find(|j| j.id == job.id) {
                 Some(slot) => {
@@ -638,6 +662,9 @@ impl FakeController {
                 None => return,
             }
         };
+        // Stamp after the store write, so the fake's own view and the event it
+        // publishes cannot disagree about the device.
+        self.stamp_device(&mut snapshot);
         self.emit(ControllerEvent::JobChanged(snapshot));
     }
 }
@@ -742,6 +769,7 @@ fn summary(id: &JobId, input: &Path, phase: JobPhase) -> JobSummary {
         has_transcript: false,
         cancel_requested: false,
         word_count: None,
+        device: None,
     }
 }
 

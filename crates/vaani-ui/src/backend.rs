@@ -195,6 +195,15 @@ pub struct JobSummary {
     pub cancel_requested: bool,
     /// Word count, once a transcript exists.
     pub word_count: Option<usize>,
+    /// Which device actually ran the speech recognition, once the engine is
+    /// loaded.
+    ///
+    /// The distinction this preserves is the one that bit us: the machine can
+    /// name an RTX 3050 Ti and still transcribe on the CPU, because ONNX
+    /// Runtime's CUDA provider is a separate DLL that a build may not ship, and
+    /// its absence is a silent fall back rather than an error. So the row and
+    /// the footer report what ran, not what was detected.
+    pub device: Option<String>,
 }
 
 /// One speaker as the speaker panel shows them.

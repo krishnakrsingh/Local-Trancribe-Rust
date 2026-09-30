@@ -78,6 +78,23 @@ impl AsrProvider for RegistryAsrProvider {
         let registry = EngineRegistry::with_builtins(config.provider(), &caps)?;
         let engine = registry.create(&engine_id, &artifacts)?;
         engine.load(cancel)?;
+        // What the session actually got, not what the machine has.
+        //
+        // Detection says "this laptop has an RTX 3050 Ti"; it does not say the
+        // CUDA provider registered, and it cannot - ONNX Runtime's CUDA EP is a
+        // separate DLL that a CPU-only build simply does not ship, and the
+        // session is built with `fail_silently` so that absence turns into a
+        // silent fall back to the CPU. Asking the loaded engine is the only
+        // answer that is true, and it is the difference between "GPU
+        // acceleration available" and a transcript that took 90 seconds because
+        // nothing used the GPU.
+        let active = engine.active_provider();
+        tracing::info!(
+            model = %config.model,
+            requested = config.provider().as_str(),
+            active = active.map_or("unknown", vaani_inference::ActiveProvider::as_str),
+            "speech engine loaded"
+        );
         Ok(engine)
     }
 }
@@ -139,6 +156,13 @@ pub struct JobOutcome {
     pub words: i64,
     /// Transcript speaker count at finish.
     pub speakers: i64,
+    /// Which device actually ran speech recognition, once the engine is loaded.
+    ///
+    /// `None` for a failed or cancelled job, and for a resumed one that never
+    /// built an engine. The point of carrying it: this machine has an RTX 3050
+    /// Ti, and a build without the CUDA provider DLL transcribes on the CPU
+    /// anyway, silently. Reporting what ran is the only way anyone finds out.
+    pub device: Option<String>,
 }
 
 /// Broadcasts one [`Progress`] to every registered sink.
@@ -322,6 +346,8 @@ impl Orchestrator {
             segments: 0,
             words: 0,
             speakers: 0,
+            // No engine ran, or none could be reported.
+            device: None,
         }
     }
 
@@ -365,6 +391,8 @@ impl Orchestrator {
             segments: 0,
             words: 0,
             speakers: 0,
+            // No engine ran, or none could be reported.
+            device: None,
         }
     }
 
@@ -443,6 +471,8 @@ impl Orchestrator {
             segments,
             words,
             speakers,
+            // Reused from an earlier job, so this call built no engine.
+            device: None,
         }))
     }
 
@@ -510,6 +540,13 @@ impl Orchestrator {
             Ok(engine) => engine,
             Err(error) => return self.finish_failed(job_id, &error, progress),
         };
+        // Ask the loaded engine, not the machine. See `JobOutcome::device`.
+        let device = asr_engine.active_provider().map(|p| match p {
+            // Named for the user, not the enum: this string ends up in the
+            // footer, and "CPU-accelerated" is not a thing anyone says.
+            vaani_inference::ActiveProvider::Cuda => "GPU (CUDA)".to_owned(),
+            vaani_inference::ActiveProvider::Cpu => "CPU".to_owned(),
+        });
         if child.is_cancelled() {
             return self.finish_cancelled(job_id, progress);
         }
@@ -645,6 +682,7 @@ impl Orchestrator {
             segments,
             words,
             speakers,
+            device,
         }
     }
 

@@ -978,3 +978,54 @@ ui_test!(the_job_id_the_window_shows_is_the_one_the_backend_knows, {
     let selected = h.selected_job_id().expect("a selection");
     assert!(h.backend.job(&selected).is_some());
 });
+
+ui_test!(the_footer_names_the_device_that_actually_ran, {
+    let h = Harness::shown();
+    assert!(
+        !h.window().get_footer().contains("GPU"),
+        "an idle window must not claim a device: {:?}",
+        h.window().get_footer()
+    );
+
+    h.backend.report_device(Some("GPU (CUDA)"));
+    h.model()
+        .input_edited("C:/recordings/on-the-gpu.wav".to_owned());
+    h.model().enqueue();
+    h.pump_until("a queued job to appear", |h| h.window().get_job_count() > 0);
+    for _ in 0..40 {
+        h.pump();
+    }
+
+    let mut seen = String::new();
+    for j in h.model().job_list().jobs() {
+        seen.push_str(&format!(" {:?}:{:?}:{:?} ", j.id, j.phase, j.device));
+    }
+    assert!(
+        h.window().get_footer().contains("GPU (CUDA)"),
+        "footer {:?} | jobs {seen} | selected {:?}",
+        h.window().get_footer(),
+        h.selected_job_id()
+    );
+
+    // And it follows the truth rather than latching. A build without the
+    // CUDA provider DLL on a machine that has an RTX 3050 Ti still
+    // transcribes on the CPU, silently, at a fraction of the speed - and
+    // that is exactly the case this exists to make visible.
+    h.backend.report_device(Some("CPU"));
+    h.model()
+        .input_edited("C:/recordings/on-the-cpu.wav".to_owned());
+    h.model().enqueue();
+    for _ in 0..40 {
+        h.pump();
+    }
+    assert!(
+        h.window().get_footer().contains("CPU"),
+        "a CPU run must say so, not inherit the previous claim: {:?}",
+        h.window().get_footer()
+    );
+    assert!(
+        !h.window().get_footer().contains("GPU (CUDA)"),
+        "the CUDA claim must not survive into a CPU run: {:?}",
+        h.window().get_footer()
+    );
+});
