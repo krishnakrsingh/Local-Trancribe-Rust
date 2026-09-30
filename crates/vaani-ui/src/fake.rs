@@ -770,6 +770,7 @@ fn summary(id: &JobId, input: &Path, phase: JobPhase) -> JobSummary {
         cancel_requested: false,
         word_count: None,
         device: None,
+        timings: None,
     }
 }
 

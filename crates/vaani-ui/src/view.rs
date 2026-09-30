@@ -1190,6 +1190,15 @@ pub struct AppView {
     /// Whether the settings panel is expanded. Window-local, never persisted
     /// here: whether the panel is open is not a setting, it is a moment.
     pub settings_open: bool,
+    /// Whether the history list is the main surface.
+    ///
+    /// One surface at a time, deliberately. The old layout kept the job list,
+    /// the transcript and a right-hand rail on screen at once, and the effect
+    /// on a first run was three panels of equal weight and one obvious action
+    /// buried in them. History is a place you *go*, not a place you live.
+    pub history_open: bool,
+    /// Whether the performance panel is showing.
+    pub performance_open: bool,
     /// The current error surface.
     pub banner: Banner,
     /// Selectable models, in the order the backend listed them.
@@ -1387,6 +1396,7 @@ mod tests {
             cancel_requested: false,
             word_count: None,
             device: None,
+            timings: None,
         }
     }
 

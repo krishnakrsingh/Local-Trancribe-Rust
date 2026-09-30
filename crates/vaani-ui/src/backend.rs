@@ -204,6 +204,70 @@ pub struct JobSummary {
     /// its absence is a silent fall back rather than an error. So the row and
     /// the footer report what ran, not what was detected.
     pub device: Option<String>,
+    /// Measured cost of the finished job.
+    ///
+    /// `None` until a job completes, and permanently for one that failed or was
+    /// cancelled: there is no speed to report for work that did not finish. The
+    /// performance panel derives the real-time factor and the stage split from
+    /// here rather than from an estimate, because a benchmark nobody measured is
+    /// a guess with a decimal point in it.
+    pub timings: Option<JobTimings>,
+}
+
+/// Measured cost of one finished job, in milliseconds.
+///
+/// The unit is milliseconds throughout, matching what the engine measures, and
+/// the UI converts to seconds only for display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[allow(missing_docs)] // field names are the documentation
+pub struct JobTimings {
+    /// Wall time for the whole job, model load included.
+    pub elapsed_ms: u64,
+    /// Length of the audio recognised, so real-time factor is audio over
+    /// elapsed.
+    pub audio_ms: i64,
+    /// Feature extraction.
+    pub frontend_ms: u64,
+    /// The encoder session.
+    pub encode_ms: u64,
+    /// The decode loop.
+    pub decode_ms: u64,
+    /// Transducer emission steps, which is what the decode cost is measured per.
+    pub decode_steps: usize,
+}
+
+impl JobTimings {
+    /// Real-time factor: audio seconds per wall second. Below 1.0 is faster
+    /// than realtime.
+    ///
+    /// `None` when there is no elapsed time or no audio, which is the honest
+    /// answer for a zero-length or failed job rather than a division by zero
+    /// dressed up as a number.
+    #[must_use]
+    pub fn real_time_factor(&self) -> Option<f64> {
+        if self.elapsed_ms == 0 || self.audio_ms <= 0 {
+            return None;
+        }
+        Some(self.audio_ms as f64 / 1000.0 / (self.elapsed_ms as f64 / 1000.0))
+    }
+
+    /// How many times faster than realtime this ran, i.e. `1 / rtf`.
+    #[must_use]
+    pub fn speed_multiple(&self) -> Option<f64> {
+        self.real_time_factor()
+            .filter(|r| *r > 0.0)
+            .map(|r| 1.0 / r)
+    }
+
+    /// Cost per decode step in microseconds: the number that says whether the
+    /// decode loop is doing arithmetic or paying launch overhead.
+    #[must_use]
+    pub fn microseconds_per_step(&self) -> Option<f64> {
+        if self.decode_steps == 0 {
+            return None;
+        }
+        Some(self.decode_ms as f64 * 1000.0 / self.decode_steps as f64)
+    }
 }
 
 /// One speaker as the speaker panel shows them.

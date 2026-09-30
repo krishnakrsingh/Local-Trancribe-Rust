@@ -385,6 +385,7 @@ pub struct UiModel<C: JobController> {
     jobs: SharedModel<JobRowS>,
     speakers: SharedModel<SpeakerRowS>,
     window_rows_model: SharedModel<TranscriptRow>,
+    speed_rows: SharedModel<crate::slint_api::SpeedRow>,
     options: RefCell<OptionModels>,
     timer: Timer,
     pumps: Cell<u64>,
@@ -441,6 +442,7 @@ impl<C: JobController> UiModel<C> {
             jobs: SharedModel::new(),
             speakers: SharedModel::new(),
             window_rows_model: SharedModel::new(),
+            speed_rows: SharedModel::new(),
             options: RefCell::new(OptionModels::new()),
             timer: Timer::default(),
             pumps: Cell::new(0),
@@ -835,11 +837,25 @@ impl<C: JobController> UiModel<C> {
         let can_enqueue = state.app.can_enqueue();
         let is_demo = state.app.is_demo;
         let settings_open = state.app.settings_open;
+        let history_open = state.app.history_open;
+        let performance_open = state.app.performance_open;
         let diarize = state.app.settings.diarize;
         let theme = state.app.settings.theme;
         let total_lines = state.layout.total_lines();
         let transcript_empty = transcript_empty_message(&state);
+        let perf = performance_view(&state);
+        let speed_rows: Vec<crate::slint_api::SpeedRow> = perf
+            .rows
+            .iter()
+            .map(|r| crate::slint_api::SpeedRow {
+                label: r.label.clone().into(),
+                value: r.value.clone().into(),
+                share: r.share as f32,
+            })
+            .collect();
         let search_text = state.transcript.query().to_owned();
+        let speaker_total = i32::try_from(state.speaker_rows.len()).unwrap_or(i32::MAX);
+        let has_speed_line = !perf.speed_line.is_empty();
 
         // A scroll the UI decided on. `None` leaves the user's scroll alone,
         // which is the difference between a pane that follows the selection and
@@ -885,6 +901,20 @@ impl<C: JobController> UiModel<C> {
         window.set_diarize(diarize);
         window.set_theme_index(theme_index(theme));
         window.set_settings_open(settings_open);
+        window.set_history_open(history_open);
+        window.set_performance_open(performance_open);
+        window.set_device_label(perf.device.into());
+        window.set_word_label(perf.words.into());
+        window.set_speed_line(perf.speed_line.into());
+        window.set_speed_badge(perf.speed_badge.into());
+        window.set_speed_note(perf.note.into());
+        // The two things that should not be offered when there is nothing to
+        // offer them for: a Speakers button for a transcript with one speaker,
+        // and a speed line for a job that has not finished.
+        window.set_speaker_count(speaker_total);
+        window.set_speakers_visible(speaker_total > 1);
+        window.set_timings_available(has_speed_line);
+        sync_vec_model(&self.speed_rows.vec, &speed_rows);
         window.set_can_export(can_export);
         window.set_banner_visible(banner.visible);
         window.set_banner_level(banner.level.map_or(0, severity_level));
@@ -1098,6 +1128,22 @@ impl<C: JobController> UiModel<C> {
             move || {
                 if let Some(m) = weak.upgrade() {
                     m.toggle_settings();
+                }
+            }
+        });
+        window.on_history_toggled({
+            let weak = weak!();
+            move || {
+                if let Some(m) = weak.upgrade() {
+                    m.toggle_history();
+                }
+            }
+        });
+        window.on_performance_toggled({
+            let weak = weak!();
+            move || {
+                if let Some(m) = weak.upgrade() {
+                    m.toggle_performance();
                 }
             }
         });
@@ -1544,6 +1590,38 @@ impl<C: JobController> UiModel<C> {
         self.commit();
     }
 
+    /// Show the history list as the main surface, or go back to the transcript.
+    ///
+    /// Opening one surface closes the other two. Three panels visible at once is
+    /// what made this window feel busy, and "busy" is what a first-time user
+    /// reads as "I do not know where to start".
+    pub fn toggle_history(&self) {
+        self.assert_on_loop();
+        let mut state = self.state.borrow_mut();
+        let opening = !state.app.history_open;
+        state.app.history_open = opening;
+        if opening {
+            state.app.settings_open = false;
+            state.app.performance_open = false;
+        }
+        drop(state);
+        self.commit();
+    }
+
+    /// Show the performance panel as the main surface, or go back.
+    pub fn toggle_performance(&self) {
+        self.assert_on_loop();
+        let mut state = self.state.borrow_mut();
+        let opening = !state.app.performance_open;
+        state.app.performance_open = opening;
+        if opening {
+            state.app.settings_open = false;
+            state.app.history_open = false;
+        }
+        drop(state);
+        self.commit();
+    }
+
     /// Hide the error banner.
     pub fn dismiss_banner(&self) {
         self.assert_on_loop();
@@ -1966,6 +2044,143 @@ fn transcript_empty_message(state: &ViewState) -> String {
         Some(job) if job.phase == JobPhase::Complete => "This job produced no speech".to_owned(),
         Some(_) => "No transcript for this job".to_owned(),
         None => "No transcript yet".to_owned(),
+    }
+}
+
+/// Everything the performance panel shows, for the selected job.
+///
+/// Five derived strings and the stage rows, all from
+/// [`JobTimings`](crate::backend::JobTimings). Every field is measured, and
+/// every one of them renders empty rather than an estimate when the job has not
+/// finished: a benchmark nobody took is a guess with a decimal point in it, and a
+/// plausible guess is worse than a blank because nobody knows to distrust it.
+#[allow(clippy::struct_excessive_bools)] // three mutually exclusive panels is the point
+struct PerformanceView {
+    device: String,
+    words: String,
+    speed_line: String,
+    speed_badge: String,
+    rows: Vec<SpeedRow>,
+    note: String,
+}
+
+/// One stage's cost, for the breakdown.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpeedRow {
+    label: String,
+    value: String,
+    share: f64,
+}
+
+fn performance_view(state: &ViewState) -> PerformanceView {
+    let Some(job) = state.jobs.selected_job() else {
+        return PerformanceView {
+            device: String::new(),
+            words: String::new(),
+            speed_line: String::new(),
+            speed_badge: String::new(),
+            rows: Vec::new(),
+            note: "No file transcribed yet.".to_owned(),
+        };
+    };
+    let device = job.device.clone().unwrap_or_default();
+    let words = job
+        .word_count
+        .filter(|w| *w > 0)
+        .map_or_else(String::new, view::format_word_count);
+
+    let Some(t) = job.timings.filter(|t| t.elapsed_ms > 0) else {
+        return PerformanceView {
+            device,
+            words,
+            speed_line: String::new(),
+            speed_badge: String::new(),
+            rows: Vec::new(),
+            // Say *why* it is empty. "Running" and "finished with no numbers"
+            // are different situations and only one of them is a bug.
+            note: if job.phase.is_active() {
+                "Measured when the file finishes.".to_owned()
+            } else {
+                "No timings were recorded for this job.".to_owned()
+            },
+        };
+    };
+
+    // Audio and elapsed in the same units, once, so the two numbers on screen
+    // cannot disagree about what they are dividing.
+    let audio_s = t.audio_ms as f64 / 1000.0;
+    let elapsed_s = t.elapsed_ms as f64 / 1000.0;
+    let multiple = t.speed_multiple();
+
+    let speed_line = format!(
+        "{} of audio in {}",
+        view::format_millis(t.audio_ms),
+        format_seconds(elapsed_s)
+    );
+    let speed_badge = match multiple {
+        Some(m) if m >= 1.0 => format!("{m:.0}x faster than realtime"),
+        Some(_) => "slower than realtime".to_owned(),
+        None => String::new(),
+    };
+
+    let measured = t.frontend_ms + t.encode_ms + t.decode_ms;
+    let share = |ms: u64| {
+        if measured == 0 {
+            0.0
+        } else {
+            f64::from(u32::try_from(ms).unwrap_or(u32::MAX)) / measured as f32 as f64
+        }
+    };
+    let rows = vec![
+        SpeedRow {
+            label: "Speech detection".to_owned(),
+            value: format_seconds(t.frontend_ms as f64 / 1000.0),
+            share: share(t.frontend_ms),
+        },
+        SpeedRow {
+            label: "Encoder".to_owned(),
+            value: format_seconds(t.encode_ms as f64 / 1000.0),
+            share: share(t.encode_ms),
+        },
+        SpeedRow {
+            label: "Decoder".to_owned(),
+            value: format_seconds(t.decode_ms as f64 / 1000.0),
+            share: share(t.decode_ms),
+        },
+    ];
+
+    // The one sentence a person actually wants: why this number, and the part
+    // worth complaining about if it is slow.
+    let note = match (multiple, t.microseconds_per_step(), t.decode_steps) {
+        (Some(m), Some(us), steps) if steps > 500 => format!(
+            "{m:.0}x realtime. The decoder took {us:.0} us per step over {steps} steps, which is \
+             launch overhead rather than arithmetic."
+        ),
+        (Some(m), _, _) => format!("{m:.0}x faster than realtime, measured end to end."),
+        _ => format!("{audio_s:.0} s of audio, transcribed in {elapsed_s:.1} s."),
+    };
+
+    PerformanceView {
+        device,
+        words,
+        speed_line,
+        speed_badge,
+        rows,
+        note,
+    }
+}
+
+/// Seconds as a person writes them: `0.9 s`, `14.2 s`, `1 m 04 s`.
+fn format_seconds(s: f64) -> String {
+    if s <= 0.0 {
+        return "-".to_owned();
+    }
+    if s < 10.0 {
+        format!("{s:.1} s")
+    } else if s < 60.0 {
+        format!("{s:.0} s")
+    } else {
+        view::format_millis((s * 1000.0) as i64)
     }
 }
 
