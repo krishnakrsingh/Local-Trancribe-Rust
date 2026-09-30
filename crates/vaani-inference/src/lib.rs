@@ -119,6 +119,54 @@ impl RuntimeReport {
             (None, None) => "CPU only - no hardware GPU detected".into(),
         }
     }
+
+    /// Whether this build can actually place ONNX work on the GPU.
+    ///
+    /// Two things have to be true and they are independent: the machine has a
+    /// usable adapter, *and* the CUDA execution provider DLL is present next to
+    /// `onnxruntime.dll`. A driver-visible GPU on its own is not enough -- ONNX
+    /// Runtime silently uses the CPU EP without the provider, so a build that
+    /// shipped without `onnxruntime_providers_cuda.dll` on a machine with an
+    /// RTX 3050 Ti reports "GPU present" and runs on the CPU.
+    ///
+    /// [`Self::summary`] draws exactly this distinction in a sentence; this is
+    /// the same fact as a `bool`, for callers that need to branch on it.
+    pub fn cuda_usable(&self) -> bool {
+        self.machine.inference_adapter().is_some()
+            && !self.missing_dlls.iter().any(|d| d == runtime::ORT_CUDA_DLL)
+    }
+
+    /// Why the GPU is or is not usable, in one sentence fit for a drop-down.
+    ///
+    /// Distinct from [`Self::summary`], which is a log line addressed to whoever
+    /// is debugging; this is addressed to the person looking at a settings
+    /// panel, so it says what they can do about it rather than what the loader
+    /// found.
+    pub fn device_hint(&self) -> String {
+        let Some(adapter) = self.machine.inference_adapter() else {
+            return match self.machine.preferred_adapter() {
+                Some(a) => format!(
+                    "{} is present but CUDA is unavailable (driver {})",
+                    a.name,
+                    self.machine.cuda.driver_display()
+                ),
+                None => "No usable GPU was detected on this computer.".to_owned(),
+            };
+        };
+        if self.cuda_usable() {
+            return format!(
+                "{} · {} · driver {}",
+                adapter.name,
+                adapter.vram_display(),
+                self.machine.cuda.driver_display()
+            );
+        }
+        format!(
+            "{} detected, but this build has no CUDA provider - \
+             install the GPU flavour to use it",
+            adapter.name
+        )
+    }
 }
 
 #[cfg(test)]

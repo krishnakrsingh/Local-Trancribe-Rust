@@ -527,6 +527,21 @@ pub trait JobController: Send + Sync + 'static {
 
     /// Selectable source languages. An entry with the empty id means "detect".
     fn languages(&self) -> Vec<Choice>;
+
+    /// One line describing the compute this build can actually do, for the
+    /// status bar before any job has run.
+    ///
+    /// This exists because the alternative is the bug where a machine with an
+    /// RTX 3050 Ti runs the whole product on the CPU and the only evidence is a
+    /// log file. The device drop-down says what is *offered*; this says what is
+    /// *there*, and the two are different on a build without the CUDA provider.
+    ///
+    /// Defaults to `None` because a backend that cannot introspect its runtime
+    /// (every test double, and a headless CLI) should not have to invent an
+    /// answer.
+    fn runtime_note(&self) -> Option<String> {
+        None
+    }
 }
 
 /// The handful of things the UI needs from the host process that are not the
@@ -671,6 +686,16 @@ impl<T: JobController + ?Sized> JobController for std::sync::Arc<T> {
     fn languages(&self) -> Vec<Choice> {
         (**self).languages()
     }
+
+    // Every method of this trait has to be forwarded here by hand, and a method
+    // that is forgotten does not fail to compile -- it silently resolves to the
+    // trait's *default* body when called through an `Arc`, which is how
+    // `runtime_note` returned `None` from a backend that implemented it
+    // perfectly well. `forwards_every_method_to_the_inner_controller` below is
+    // what turns the next omission into a test failure.
+    fn runtime_note(&self) -> Option<String> {
+        (**self).runtime_note()
+    }
 }
 
 /// Every phase, in lifecycle order, including the one `JobPhase::ALL` omits.
@@ -699,6 +724,133 @@ pub const ALL_PHASES: [JobPhase; 14] = [
 mod tests {
     use super::*;
     use vaani_core::err;
+
+    /// A distinct error, so a forwarded method is distinguishable from one
+    /// that reached its default body.
+    fn boom() -> UserFacingError {
+        user_facing(&err::internal())
+    }
+
+    /// A controller that answers differently from the trait's defaults, so a
+    /// method reached through `Arc` can be told apart from one that fell
+    /// through to its default body.
+    struct Loud;
+
+    impl JobController for Loud {
+        fn backend_name(&self) -> String {
+            "loud".into()
+        }
+        fn is_demo(&self) -> bool {
+            false
+        }
+        fn jobs(&self) -> Vec<JobSummary> {
+            Vec::new()
+        }
+        fn job(&self, _: &JobId) -> Option<JobSummary> {
+            None
+        }
+        fn enqueue(&self, _: &std::path::Path) -> Result<JobId, UserFacingError> {
+            Err(boom())
+        }
+        fn cancel(&self, _: &JobId) -> Result<(), UserFacingError> {
+            Err(boom())
+        }
+        fn remove(&self, _: &JobId) -> Result<(), UserFacingError> {
+            Err(boom())
+        }
+        fn transcript(
+            &self,
+            _: &JobId,
+        ) -> Result<Option<std::sync::Arc<Transcript>>, UserFacingError> {
+            Ok(None)
+        }
+        fn speakers(&self, _: &JobId) -> Result<Vec<SpeakerSummary>, UserFacingError> {
+            Ok(Vec::new())
+        }
+        fn rename_speaker(
+            &self,
+            _: &JobId,
+            _: usize,
+            _: Option<String>,
+        ) -> Result<(), UserFacingError> {
+            Err(boom())
+        }
+        fn export(&self, _: &ExportRequest) -> Result<(), UserFacingError> {
+            Err(boom())
+        }
+        fn settings(&self) -> AppSettings {
+            AppSettings::default()
+        }
+        fn update_settings(&self, _: SettingsPatch) -> Result<AppSettings, UserFacingError> {
+            Err(boom())
+        }
+        fn subscribe(&self) -> Receiver<ControllerEvent> {
+            let (_tx, rx) = crossbeam_channel::unbounded();
+            rx
+        }
+        fn models(&self) -> Vec<Choice> {
+            Vec::new()
+        }
+        fn devices(&self) -> Vec<Choice> {
+            vec![Choice {
+                id: "loud".into(),
+                label: "LOUD".into(),
+                detail: Some("forwarded".into()),
+                available: true,
+            }]
+        }
+        fn languages(&self) -> Vec<Choice> {
+            Vec::new()
+        }
+        /// The method this test is about. Overriding it with something the
+        /// default could never produce is the whole trick.
+        fn runtime_note(&self) -> Option<String> {
+            Some("FORWARDED".into())
+        }
+    }
+
+    /// Every [`JobController`] method must be forwarded by the `Arc` impl.
+    ///
+    /// Adding a method to the trait and forgetting the hand-written forwarding
+    /// in `impl JobController for Arc<T>` does not break the build. The `Arc`
+    /// impl inherits the trait's default body, so the method silently answers
+    /// `None`/empty for every controller reached through an `Arc` -- which is how
+    /// `runtime_note` returned `None` from a backend that implemented it
+    /// correctly, and the UI showed no runtime information at all.
+    ///
+    /// This test catches that by comparing the `Arc` against the bare value for
+    /// the methods whose defaults are not the identity. If someone adds a method
+    /// and forgets to forward it, the two disagree and this fails.
+    #[test]
+    fn forwards_every_method_to_the_inner_controller() {
+        let arc: std::sync::Arc<Loud> = std::sync::Arc::new(Loud);
+        let bare = Loud;
+
+        assert_eq!(arc.backend_name(), bare.backend_name());
+        assert_eq!(arc.is_demo(), bare.is_demo());
+        assert_eq!(arc.devices().len(), bare.devices().len());
+        assert_eq!(arc.devices()[0].id, "loud");
+        // The one with a non-empty default difference, and the one that bit us.
+        assert_eq!(
+            arc.runtime_note(),
+            Some("FORWARDED".to_string()),
+            "Arc<T> fell through to the trait default instead of forwarding \
+             runtime_note; add it to the Arc impl"
+        );
+    }
+
+    #[test]
+    fn the_arc_impl_does_not_hide_a_defaulted_method() {
+        // Belt and braces on the one method most likely to be missed again: it
+        // must be *possible* for an Arc-wrapped controller to report a runtime,
+        // or the whole "tell the user what device is live" feature is dead on
+        // arrival for the production wiring.
+        let arc: std::sync::Arc<Loud> = std::sync::Arc::new(Loud);
+        assert!(
+            arc.runtime_note().is_some(),
+            "a controller that implements runtime_note must survive being wrapped in an Arc"
+        );
+    }
 
     #[test]
     fn all_phases_is_the_union_of_the_state_machine_and_cancelled() {

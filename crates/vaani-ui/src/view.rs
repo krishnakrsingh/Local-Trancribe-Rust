@@ -1183,6 +1183,12 @@ pub struct AppView {
     pub backend_name: String,
     /// Whether the backend is a demo, so a banner says so.
     pub is_demo: bool,
+    /// What this build can actually do, for the status bar.
+    ///
+    /// `None` when the backend cannot introspect its own runtime. The footer
+    /// then simply omits it, rather than printing something reassuring that was
+    /// never measured.
+    pub runtime_note: Option<String>,
     /// The host providing dialogs.
     pub host_name: String,
     /// Settings.

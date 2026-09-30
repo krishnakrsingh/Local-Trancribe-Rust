@@ -127,7 +127,18 @@ fn map_target(target: &UiExportTarget) -> ExportTgt {
 pub struct AppBackend {
     orchestrator: Arc<Orchestrator>,
     models: Mutex<ModelManager>,
+    /// Whether this build can actually put ONNX work on the GPU.
+    ///
+    /// Not "does the machine have a GPU". A CPU-only distribution on a machine
+    /// with an RTX 3050 Ti answers `true` to the second question and runs on the
+    /// CPU, because ONNX Runtime silently falls back when the CUDA execution
+    /// provider DLL is absent. Asking `capability::detect(&[])` -- which is what
+    /// this used to do -- answers the first question only, and produced a
+    /// settings panel claiming "A usable NVIDIA GPU was detected" on a build
+    /// that could never use it.
     gpu_available: bool,
+    /// Why the GPU is or is not usable, for the settings panel.
+    gpu_detail: String,
     state: Mutex<BackendState>,
     events: Sender<ControllerEvent>,
     subscription: Mutex<Option<Receiver<ControllerEvent>>>,
@@ -173,12 +184,18 @@ impl AppBackend {
 
     fn with_orchestrator_store(orchestrator: Arc<Orchestrator>) -> vaani_core::Result<Arc<Self>> {
         let models = ModelManager::embedded().map_err(|error| err::internal().with_cause(error))?;
-        let gpu_available = vaani_inference::capability::detect(&[]).gpu_acceleration_available();
+        // The full report, not `detect(&[])`. It searches the real provider
+        // directories, so `gpu_available` means "this build can use it" rather
+        // than "the driver sees a GPU".
+        let runtime = vaani_inference::RuntimeReport::collect();
+        let gpu_available = runtime.cuda_usable();
+        let gpu_detail = runtime.device_hint();
         let (events, subscription) = unbounded();
         let backend = Arc::new(Self {
             orchestrator,
             models: Mutex::new(models),
             gpu_available,
+            gpu_detail,
             state: Mutex::new(BackendState::default()),
             events,
             subscription: Mutex::new(Some(subscription)),
@@ -806,11 +823,18 @@ impl JobController for AppBackend {
     }
 
     fn devices(&self) -> Vec<Choice> {
+        // "Automatic" describes what it will actually do, which depends on this
+        // build: on one with no CUDA provider "automatic" means CPU, and saying
+        // otherwise is the same lie as offering a live "GPU (CUDA)" entry.
         vec![
             Choice {
                 id: "auto".to_owned(),
                 label: "Automatic".to_owned(),
-                detail: Some("Use the GPU when usable, otherwise the CPU.".to_owned()),
+                detail: Some(if self.gpu_available {
+                    "Use the GPU when usable, otherwise the CPU.".to_owned()
+                } else {
+                    "Use the CPU. This build has no CUDA provider.".to_owned()
+                }),
                 available: true,
             },
             Choice {
@@ -822,14 +846,25 @@ impl JobController for AppBackend {
             Choice {
                 id: "cuda".to_owned(),
                 label: "GPU (CUDA)".to_owned(),
-                detail: Some(if self.gpu_available {
-                    "A usable NVIDIA GPU was detected.".to_owned()
-                } else {
-                    "No usable GPU was detected on this computer.".to_owned()
-                }),
+                // The real reason, from the runtime probe. A generic "no usable
+                // GPU" is wrong in the case that actually happens: the machine
+                // has a good GPU and the *distribution* is missing the provider,
+                // which is fixable and worth saying so about.
+                detail: Some(self.gpu_detail.clone()),
                 available: self.gpu_available,
             },
         ]
+    }
+
+    fn runtime_note(&self) -> Option<String> {
+        Some(if self.gpu_available {
+            format!("CUDA available · {}", self.gpu_detail)
+        } else {
+            // Say the useful thing: not "no GPU", but what is missing and how to
+            // get it. A user with a perfectly good GPU who installed the wrong
+            // flavour needs to be told that, not told their hardware is bad.
+            format!("CPU only · {}", self.gpu_detail)
+        })
     }
 
     fn languages(&self) -> Vec<Choice> {
@@ -934,6 +969,81 @@ mod tests {
         assert!(!fix.backend.is_demo());
         assert_eq!(fix.backend.languages().len(), 5);
         assert_eq!(fix.backend.devices().len(), 3);
+    }
+
+    /// The bug this exists for: a CPU-only distribution installed on a machine
+    /// with an RTX 3050 Ti reported "GPU (CUDA)" as available, because
+    /// availability was computed by asking whether a *driver* sees a GPU rather
+    /// than whether this *build* can use one. The user then queued a job, waited
+    /// for a CPU-speed transcript, and had no way to tell why.
+    ///
+    /// The invariant is not "the CUDA entry is enabled" -- that depends on the
+    /// machine running the test. It is that the two claims cannot disagree: if
+    /// the entry is selectable, the runtime note has to say CUDA, and if it is
+    /// not, the note has to say so instead.
+    #[test]
+    fn the_gpu_entry_and_the_runtime_note_cannot_disagree() {
+        let fix = backend_fixture(sine_audio(2), 103, false);
+        let devices = fix.backend.devices();
+        let cuda = devices
+            .iter()
+            .find(|d| d.id == "cuda")
+            .expect("there is always a CUDA entry, available or not");
+        let note = fix
+            .backend
+            .runtime_note()
+            .expect("the production backend always reports its runtime");
+
+        if cuda.available {
+            assert!(
+                note.starts_with("CUDA available"),
+                "a selectable GPU must be reported as available: {note:?}"
+            );
+            // And it must have said something concrete about the hardware.
+            let detail = cuda.detail.as_deref().unwrap_or_default();
+            assert!(
+                !detail.contains("no CUDA provider"),
+                "an available GPU must not be described as missing its provider: {detail:?}"
+            );
+        } else {
+            assert!(
+                note.starts_with("CPU only"),
+                "an unusable GPU must be reported as such: {note:?}"
+            );
+            // The reason has to be actionable. "No usable GPU was detected" on a
+            // machine that has a GPU is the unhelpful version of this message.
+            let detail = cuda.detail.as_deref().unwrap_or_default();
+            assert!(
+                !detail.contains("No usable GPU was detected"),
+                "an unavailable entry must say *why* in terms the user can act on, \
+                 not blame hardware that may be fine: {detail:?}"
+            );
+        }
+    }
+
+    /// "Automatic" must describe what it will actually do on *this* build.
+    #[test]
+    fn automatic_does_not_promise_a_gpu_this_build_cannot_use() {
+        let fix = backend_fixture(sine_audio(2), 104, false);
+        let devices = fix.backend.devices();
+        let auto = devices
+            .iter()
+            .find(|d| d.id == "auto")
+            .expect("there is always an automatic entry");
+        let cuda_usable = devices.iter().any(|d| d.id == "cuda" && d.available);
+        let detail = auto.detail.as_deref().unwrap_or_default();
+
+        if cuda_usable {
+            assert!(
+                detail.contains("Use the GPU"),
+                "with a usable GPU, automatic should say it uses it: {detail:?}"
+            );
+        } else {
+            assert!(
+                !detail.contains("Use the GPU when usable"),
+                "without one, automatic must not imply it will use a GPU: {detail:?}"
+            );
+        }
     }
 
     #[test]

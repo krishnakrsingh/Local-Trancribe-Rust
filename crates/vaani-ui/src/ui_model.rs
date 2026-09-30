@@ -414,6 +414,7 @@ impl<C: JobController> UiModel<C> {
         let app = AppView {
             backend_name: controller.backend_name(),
             is_demo: controller.is_demo(),
+            runtime_note: controller.runtime_note(),
             host_name: host.host_name(),
             settings: settings.clone(),
             models: controller.models(),
@@ -1728,6 +1729,17 @@ impl<C: JobController> UiModel<C> {
         ];
         if state.app.is_demo {
             parts.push("DEMO DATA".to_owned());
+        }
+        // What this build can actually do, before any job has run.
+        //
+        // The per-job device below only appears once something has finished, so
+        // on a fresh launch there was nothing on screen saying "GPU" or "CPU"
+        // at all -- and the settings panel offered a GPU entry whose
+        // availability was computed from the wrong question. A CPU-only build on
+        // a machine with a good GPU therefore looked identical to a working one
+        // until the first transcript came back slow.
+        if let Some(note) = state.app.runtime_note.as_deref() {
+            parts.push(note.to_owned());
         }
         parts.push(format!(
             "{} running, {} finished",
