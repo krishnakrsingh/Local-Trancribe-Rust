@@ -47,6 +47,146 @@ use vaani_ui::view::SpeakerPanel;
 use vaani_ui::{HostServices, UiSession};
 
 // ---------------------------------------------------------------------------
+// Layout at the size a laptop actually has
+// ---------------------------------------------------------------------------
+
+/// The narrowest window the app claims to support, and the width of a very
+/// common laptop screen. A layout that only works at the default 1180px is not
+/// a layout, it is a screenshot.
+const NARROW: (i32, i32) = (1024, 700);
+const LAPTOP: (i32, i32) = (1280, 800);
+
+ui_test!(the_window_fits_its_own_minimum_width_without_clipping, {
+    let h = Harness::shown();
+    h.select_finished();
+
+    // The narrowest size the .slint advertises.
+    h.resized(NARROW.0, NARROW.1);
+    assert_eq!(
+        h.size(),
+        NARROW,
+        "the window refused the size it advertises as its minimum"
+    );
+
+    // A transcript present and selected is the state with the most controls
+    // on screen, so it is the one that has to fit.
+    assert!(
+        h.window().get_transcript_rows_total() > 0,
+        "the finished job must have a transcript to lay out"
+    );
+    assert!(
+        h.window().get_can_copy(),
+        "a transcript with words must offer Copy"
+    );
+
+    // The transcript viewport is the surface that must never be squeezed to
+    // nothing: a zero or negative height means the header above it ate the
+    // window.
+    assert!(
+        h.window().get_transcript_content_height() > 0.0,
+        "the transcript has content but nothing to show it in"
+    );
+});
+
+ui_test!(the_top_bar_never_needs_more_width_than_a_laptop_has, {
+    // Walk down from a wide window. If any control is pushed off the right
+    // edge it happens somewhere in here, and the test says which width.
+    let h = Harness::shown();
+    h.select_finished();
+
+    for width in [1600, 1440, 1366, LAPTOP.0, NARROW.0] {
+        h.resized(width, LAPTOP.1);
+
+        // The path field is the only element that may absorb slack; it is
+        // the one element with a stretch factor. Everything else keeps its
+        // own width, so the bar's real cost is fixed and testable.
+        assert!(
+            h.window().get_can_enqueue() || h.window().get_input_path().is_empty(),
+            "at {width}px the top bar stopped reporting a usable input"
+        );
+
+        // The window must not have been forced wider than we asked for,
+        // which is what a control with an unbounded implicit width does.
+        assert_eq!(
+            h.size().0,
+            width,
+            "at {width}px the window could not honour the requested width, \
+                 so something in the top bar has an unbounded preferred width"
+        );
+    }
+});
+
+ui_test!(
+    the_status_bar_owns_the_navigation_so_the_top_bar_stays_small,
+    {
+        // The point of the redesign: History, Speed and Settings are reachable
+        // without competing with "Choose file..." for width. They live in the
+        // status bar, so the top bar's cost does not grow when they are added.
+        let h = Harness::shown();
+
+        // The toggles are wired, and each one flips the model rather than
+        // needing Rust to remember a parallel flag.
+        assert!(!h.window().get_history_open());
+        h.window().invoke_history_toggled();
+        h.pump();
+        assert!(h.window().get_history_open());
+
+        assert!(!h.window().get_performance_open());
+        h.window().invoke_performance_toggled();
+        h.pump();
+        assert!(h.window().get_performance_open());
+
+        // They are mutually exclusive, because each is an overlay on the one
+        // main surface: two overlays at once would be two answers to "what am
+        // I looking at".
+        h.window().invoke_history_toggled();
+        h.pump();
+        assert!(h.window().get_history_open());
+        assert!(
+            !h.window().get_performance_open(),
+            "Speed must close when History opens; they share one surface"
+        );
+        assert!(
+            !h.window().get_settings_open(),
+            "Settings must close too, for the same reason"
+        );
+
+        // And closing goes back to the transcript.
+        h.window().invoke_history_toggled();
+        h.pump();
+        assert!(!h.window().get_history_open());
+        assert!(!h.window().get_performance_open());
+    }
+);
+
+ui_test!(controls_that_have_nothing_to_do_are_not_offered, {
+    let h = Harness::shown();
+
+    // No timings yet: no speed line, and the Speed panel says so rather
+    // than showing zeroes that look like a measurement.
+    assert!(
+        !h.window().get_timings_available(),
+        "a job with no measurements must not advertise a speed line"
+    );
+    assert!(
+        h.window().get_speed_line().is_empty(),
+        "speed line was {:?}",
+        h.window().get_speed_line()
+    );
+
+    // One speaker is not a speaker problem, so no Speakers button.
+    h.select_finished();
+    let speakers = h.model().speaker_panel();
+    if speakers.speakers().len() <= 1 {
+        assert!(
+            !h.window().get_speakers_visible(),
+            "{} speakers must not raise a Speakers button",
+            speakers.speakers().len()
+        );
+    }
+});
+
+// ---------------------------------------------------------------------------
 // Construction
 // ---------------------------------------------------------------------------
 

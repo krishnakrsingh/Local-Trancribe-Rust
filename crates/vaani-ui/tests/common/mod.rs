@@ -186,6 +186,27 @@ impl Harness {
             .invoke_select_job_requested(i32::try_from(index).unwrap());
         i32::try_from(index).unwrap()
     }
+    /// Resize the window and let it lay out.
+    ///
+    /// The window's own minimums are not the interesting number; the width a
+    /// person actually has on a laptop is. Tests that only ever run at the
+    /// default size pass on a layout that overflows at 1280px, which is most
+    /// laptops.
+    pub fn resized(&self, width: i32, height: i32) {
+        self.window()
+            .window()
+            .set_size(slint::LogicalSize::new(width as f32, height as f32));
+        // Two pumps: one to apply the new size, one to run the viewport
+        // callback that the transcript layout depends on.
+        self.pump();
+        self.pump();
+    }
+
+    /// The window's logical size.
+    pub fn size(&self) -> (i32, i32) {
+        let s = self.window().window().size();
+        (s.width as i32, s.height as i32)
+    }
 }
 
 /// Declare a test that runs on the shared UI thread.

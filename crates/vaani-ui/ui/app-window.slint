@@ -110,6 +110,16 @@ export struct SpeakerRow {
     is-named: bool,
 }
 
+// One stage's measured cost, for the performance panel: what it was called, how
+// long it took, and what fraction of the recognised time that was. `share` is a
+// fraction in [0, 1] so the arithmetic happens once in Rust rather than once per
+// row per frame.
+export struct SpeedRow {
+    label: string,
+    value: string,
+    share: float,
+}
+
 // ---------------------------------------------------------------------------
 // Colours
 // ---------------------------------------------------------------------------
@@ -223,6 +233,7 @@ component ActionButton inherits Rectangle {
     callback clicked();
 
     min-width: 72px;
+    max-width: 220px;
     height: 32px;
     border-radius: 4px;
     background: !root.enabled ? VaaniColors.line.with-alpha(0.4)
@@ -235,8 +246,8 @@ component ActionButton inherits Rectangle {
     forward-focus: i-focus;
 
     Text {
-        x: 6px;
-        width: parent.width - 12px;
+        x: 10px;
+        width: parent.width - 20px;
         text: root.label;
         color: !root.enabled ? VaaniColors.idle
             : root.primary ? VaaniColors.accent-ink
@@ -245,8 +256,10 @@ component ActionButton inherits Rectangle {
         font-weight: root.primary ? 600 : 400;
         horizontal-alignment: center;
         vertical-alignment: center;
-        wrap: word-wrap;
-        max-lines: 2;
+        // One line, always. Word-wrapping in a fixed-height button made the
+        // button's implicit width unbounded, and a toolbar of unbounded buttons
+        // is how a 1360px window ends up with "Transcribe" half off-screen.
+        wrap: no-wrap;
         overflow: elide;
     }
 
@@ -790,6 +803,41 @@ export component AppWindow inherits Window {
     in-out property <bool> diarize: true;
     in-out property <int> theme-index: 0; // 0 system, 1 light, 2 dark
     in property <bool> settings-open: false;
+    in property <bool> history-open: false;
+    in property <bool> performance-open: false;
+    /// Whether the speakers strip is expanded. Window-local, like the search box,
+    /// and deliberately never written from Rust: this is the window's own state,
+    /// and the model has no business resetting it on every commit.
+    in-out property <bool> speakers-open: false;
+    /// How many speakers the current transcript found. `0` until it loads.
+    in property <int> speaker-count: 0;
+    /// Whether a "Speakers" button is worth offering. One speaker is not worth a
+    /// panel, and a button for something that is not there is how a toolbar
+    /// fills up with controls.
+    in property <bool> speakers-visible: false;
+    /// Whether the search box is showing. Hidden until asked for: a permanent
+    /// search field plus two navigation buttons is three controls for a feature
+    /// most transcripts are read without.
+    in-out property <bool> search-visible: false;
+    /// Whether a measured speed exists for the selected job.
+    in property <bool> timings-available: false;
+
+    // --- measured performance -----------------------------------------------
+    // Every string here comes from timings the engine actually reported. None of
+    // it is estimated, and anything unmeasured renders empty rather than as a
+    // plausible-looking number.
+    /// "GPU (CUDA)" or "CPU", empty until the engine has loaded.
+    in property <string> device-label: "";
+    /// "1,908 words".
+    in property <string> word-label: "";
+    /// "13m 54s of audio in 14.2 s".
+    in property <string> speed-line: "";
+    /// "58x faster than realtime".
+    in property <string> speed-badge: "";
+    /// The stage breakdown.
+    in property <[SpeedRow]> speed-rows;
+    /// One sentence saying what the number means.
+    in property <string> speed-note: "";
     in-out property <int> export-format: 0;
     in property <bool> can-export: false;
 
@@ -831,6 +879,8 @@ export component AppWindow inherits Window {
     callback diarize-toggled(on: bool);
     callback theme-selected(index: int);
     callback settings-toggled();
+    callback history-toggled();
+    callback performance-toggled();
     callback dismiss-banner-requested();
     // Fired when the transcript viewport moves or resizes, so Rust can
     // rewindow. Offsets arrive in logical pixels; Rust converts to lines.
@@ -906,34 +956,38 @@ export component AppWindow inherits Window {
             padding: 0px;
             spacing: 0px;
 
-            // -- toolbar -----------------------------------------------------
+// -- top bar ---------------------------------------------------
+            // One row, and only the things a person needs before they have a
+            // transcript. The old toolbar had six buttons of equal weight; the
+            // only one that mattered was the first, and the rest read as "you
+            // are doing this wrong".
             Rectangle {
-                height: 56px;
+                height: 52px;
                 background: VaaniColors.raised;
 
                 HorizontalLayout {
                     padding-left: 12px;
                     padding-right: 12px;
-                    padding-top: 10px;
-                    padding-bottom: 10px;
+                    padding-top: 8px;
+                    padding-bottom: 8px;
                     spacing: 8px;
 
                     ActionButton {
-                        label: "Add file...";
+                        label: "Choose file...";
                         primary: true;
                         description: "Choose a video or audio file to transcribe. Shortcut F2.";
                         clicked => { root.browse-input-requested(); }
                     }
 
+                    // The chosen file, or what to do instead. Doubles as the
+                    // path editor, because being able to fix a mistyped path is
+                    // cheaper than a dialog that guesses.
                     path-field := LineEdit {
                         horizontal-stretch: 1;
-                        min-width: 180px;
+                        min-width: 160px;
                         text: root.input-path;
-                        placeholder-text: "Path to a video or audio file";
+                        placeholder-text: "Drop a video or audio file here, or choose one";
                         accessible-label: "Input file path";
-                        // A file the product cannot read is called out in words
-                        // as well as by tint, and the field stays editable so
-                        // the path can be corrected rather than re-picked.
                         accessible-description: root.input-accepted
                             ? "This looks like a supported media file."
                             : "This does not look like a supported media file.";
@@ -942,41 +996,35 @@ export component AppWindow inherits Window {
                     }
 
                     ActionButton {
-                        label: root.input-accepted ? "Transcribe" : "Unsupported file";
+                        label: "Transcribe";
                         primary: true;
                         enabled: root.can-enqueue;
                         description: "Queue this file for transcription. Shortcut F5.";
                         clicked => { root.enqueue-requested(); }
                     }
 
-                    ActionButton {
+                    // Cancel exists only while there is something to cancel. A
+                    // permanently greyed-out Cancel is a button that trains people
+                    // to stop reading the toolbar.
+                    if root.can-cancel: ActionButton {
                         label: "Cancel";
                         destructive: true;
-                        enabled: root.can-cancel;
                         description: "Stop the running job. Shortcut Control Escape.";
                         clicked => { root.cancel-requested(); }
                     }
-
-                    ActionButton {
-                        label: root.settings-open ? "Hide settings" : "Settings";
-                        description: "Show model, device and language options.";
-                        clicked => { root.settings-toggled(); }
-                    }
-
-                    ActionButton {
-                        label: "Export";
-                        enabled: root.can-export;
-                        description: "Write the selected transcript to a file. Shortcut F6.";
-                        clicked => { root.export-requested(); }
-                    }
                 }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: VaaniColors.line;
             }
 
             // -- demo notice -------------------------------------------------
             // A fake backend says so, permanently and in words. A screenshot of
             // a demo run must never be mistaken for the product.
             if root.demo-mode: Rectangle {
-                height: 32px;
+                height: 28px;
                 background: VaaniColors.warn.with-alpha(0.18);
 
                 HorizontalLayout {
@@ -988,8 +1036,9 @@ export component AppWindow inherits Window {
                         text: "Demo mode: transcripts are labelled sample data, not real speech.";
                         color: VaaniColors.ink;
                         font-size: 12px;
-                        wrap: word-wrap;
                         horizontal-stretch: 1;
+                        wrap: no-wrap;
+                        overflow: elide;
                         vertical-alignment: center;
                     }
                 }
@@ -999,7 +1048,7 @@ export component AppWindow inherits Window {
             // One banner, not a stack of toasts. Every error carries a recovery
             // action, so the banner always shows it.
             if root.banner-visible: Rectangle {
-                height: 96px;
+                height: 72px;
                 background: root.banner-level == 2 ? VaaniColors.bad.with-alpha(0.14)
                     : root.banner-level == 1 ? VaaniColors.warn.with-alpha(0.16)
                     : VaaniColors.accent.with-alpha(0.12);
@@ -1010,140 +1059,371 @@ export component AppWindow inherits Window {
                     padding-right: 12px;
                     padding-top: 8px;
                     padding-bottom: 8px;
-                    spacing: 10px;
-
-                    Text {
-                        // The word carries the severity, so the level survives a
-                        // monochrome display and a screen reader.
-                        text: root.banner-level == 2 ? "ERROR"
-                            : root.banner-level == 1 ? "WARNING"
-                            : "NOTICE";
-                        color: root.banner-level == 2 ? VaaniColors.bad
-                            : root.banner-level == 1 ? VaaniColors.warn
-                            : VaaniColors.accent;
-                        font-weight: 700;
-                        font-size: 12px;
-                        vertical-alignment: center;
-                    }
+                    spacing: 12px;
 
                     VerticalLayout {
-                        horizontal-stretch: 1;
-                        spacing: 2px;
                         padding: 0px;
+                        spacing: 2px;
+                        horizontal-stretch: 1;
+
+                        Text {
+                            // The word carries the severity, so the level
+                            // survives a monochrome display and a screen
+                            // reader.
+                            text: root.banner-level == 2 ? "ERROR"
+                            : root.banner-level == 1 ? "WARNING"
+                            : "NOTICE";
+                            color: root.banner-level == 2 ? VaaniColors.bad
+                            : root.banner-level == 1 ? VaaniColors.warn
+                            : VaaniColors.accent;
+                            font-weight: 700;
+                            font-size: 11px;
+                            wrap: no-wrap;
+                            overflow: elide;
+                        }
 
                         Text {
                             text: root.banner-title;
                             color: VaaniColors.ink;
-                            font-weight: 600;
                             font-size: 13px;
-                            wrap: word-wrap;
+                            font-weight: 600;
+                            wrap: no-wrap;
+                            overflow: elide;
                         }
-                        if root.banner-detail != "": Text {
+
+                        Text {
                             text: root.banner-detail;
                             color: VaaniColors.ink-dim;
                             font-size: 12px;
-                            wrap: word-wrap;
-                        }
-                        if root.banner-recovery != "": Text {
-                            text: "What to do: " + root.banner-recovery;
-                            color: VaaniColors.ink;
-                            font-size: 12px;
-                            font-italic: true;
-                            wrap: word-wrap;
-                        }
-                        if root.banner-code != "": Text {
-                            text: "Code: " + root.banner-code;
-                            color: VaaniColors.ink-dim;
-                            font-size: 11px;
                             wrap: no-wrap;
                             overflow: elide;
                         }
                     }
 
+                    if root.banner-recovery != "": ActionButton {
+                        label: "What now";
+                        primary: true;
+                        description: root.banner-recovery;
+                        clicked => { root.dismiss-banner-requested(); }
+                    }
+
                     ActionButton {
                         label: "Dismiss";
+                        description: "Hide this message. Shortcut Escape.";
                         clicked => { root.dismiss-banner-requested(); }
                     }
                 }
             }
 
-            // -- activity row ------------------------------------------------
+            // -- main --------------------------------------------------------
+            // One surface at a time, and the transcript is the base layer.
+            //
+            // The panels below are overlays rather than siblings, painted over
+            // it, for a reason that is not tidiness: `transcript-scroll` is
+            // named by the viewport handler at the top of this file, and an id
+            // inside an `if` cannot be seen from outside it. Keeping the
+            // transcript unconditional keeps that name in scope, and an overlay
+            // is how the other surfaces take its place anyway.
             Rectangle {
-                height: 42px;
+                vertical-stretch: 1;
                 background: VaaniColors.surface;
 
-                HorizontalLayout {
-                    padding-left: 12px;
-                    padding-right: 12px;
-                    spacing: 10px;
+                VerticalLayout {
+                    padding: 0px;
+                    spacing: 0px;
 
-                    Text {
-                        text: root.activity;
-                        color: VaaniColors.ink;
-                        font-size: 12px;
-                        wrap: word-wrap;
-                        overflow: elide;
-                        horizontal-stretch: 1;
-                        vertical-alignment: center;
+                    // Progress, only while there is progress. A bar at rest reads
+                    // as "0% forever", so it is not drawn at all.
+                    if root.busy: Rectangle {
+                        height: 40px;
+                        background: VaaniColors.surface;
+
+                        HorizontalLayout {
+                            padding-left: 16px;
+                            padding-right: 16px;
+                            padding-top: 8px;
+                            padding-bottom: 8px;
+                            spacing: 12px;
+
+                            Text {
+                                text: root.activity;
+                                color: VaaniColors.ink;
+                                font-size: 13px;
+                                font-weight: 600;
+                                horizontal-stretch: 1;
+                                wrap: no-wrap;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: root.overall-text;
+                                color: VaaniColors.ink;
+                                font-size: 13px;
+                                font-weight: 600;
+                                min-width: 44px;
+                                wrap: no-wrap;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            height: 3px;
+                            background: VaaniColors.raised;
+
+                            Rectangle {
+                                width: parent.width * (root.overall < 0 ? 0 : min(root.overall, 1));
+                                background: VaaniColors.accent;
+                            }
+                        }
                     }
 
-                    Meter {
-                        width: 180px;
-                        value: root.overall;
-                        fill: root.overall < 0 ? VaaniColors.idle : VaaniColors.accent;
+                    // One header line: what this is, and the few things you can
+                    // do with it.
+                    Rectangle {
+                        height: 46px;
+                        background: VaaniColors.surface;
+
+                        HorizontalLayout {
+                            padding-left: 16px;
+                            padding-right: 16px;
+                            spacing: 8px;
+
+                            Text {
+                                text: root.word-label == "" ? "Transcript" : root.transcript-summary;
+                                color: VaaniColors.ink;
+                                font-size: 14px;
+                                font-weight: 600;
+                                horizontal-stretch: 1;
+                                wrap: no-wrap;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+
+                            if !root.search-visible: ActionButton {
+                                label: "Find";
+                                description: "Search this transcript. Shortcut F3.";
+                                clicked => { root.search-visible = true; }
+                            }
+
+                            if root.search-visible: search-field := LineEdit {
+                                preferred-width: 200px;
+                                text: root.search-text;
+                                placeholder-text: "Find in transcript";
+                                accessible-label: "Find in transcript";
+                                accessible-description: "Press F3 for the next match, Shift F3 for the previous one.";
+                                edited(t) => { root.search-text = t; root.search-edited(t); }
+                                accepted(t) => { root.search-text = t; root.search-edited(t); root.find-next-requested(); }
+                            }
+
+                            if root.search-visible: ActionButton {
+                                label: root.match-count == "" ? "Next" : root.match-count;
+                                enabled: root.match-count != "";
+                                description: "Jump to the next match. Shortcut F3.";
+                                clicked => { root.find-next-requested(); }
+                            }
+
+                            if root.speakers-visible: ActionButton {
+                                label: "Speakers";
+                                description: "Who spoke, and for how long.";
+                                clicked => { root.speakers-open = !root.speakers-open; }
+                            }
+
+                            ActionButton {
+                                label: "Copy";
+                                primary: true;
+                                enabled: root.can-copy;
+                                description: "Copy the selected segments, or the whole transcript if nothing is selected. Shortcut Control C.";
+                                clicked => { root.copy-requested(); }
+                            }
+
+                            ActionButton {
+                                label: "Export";
+                                enabled: root.can-export;
+                                description: "Write the selected transcript to a file. Shortcut F6.";
+                                clicked => { root.export-requested(); }
+                            }
+                        }
                     }
 
-                    Text {
-                        text: root.overall-text;
-                        color: VaaniColors.ink-dim;
-                        font-size: 12px;
-                        horizontal-alignment: right;
-                        min-width: 92px;
-                        vertical-alignment: center;
-                        wrap: no-wrap;
-                        overflow: elide;
+                    Rectangle {
+                        height: 1px;
+                        background: VaaniColors.line;
+                    }
+
+                    // --- transcript body ---
+                    Rectangle {
+                        vertical-stretch: 1;
+                        background: VaaniColors.surface;
+                        clip: true;
+
+                        if root.transcript-rows-total == 0: EmptyState {
+                            message: root.transcript-empty;
+                            hint: "Choose a file above, and its words appear here as they are recognised.";
+                        }
+
+                        transcript-scroll := Flickable {
+                            x: 0;
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            content-width: self.width;
+                            content-height: root.transcript-content-height;
+                            content-y <=> root.transcript-scroll-y;
+                            interactive: root.transcript-rows-total > 0;
+                            visible: root.transcript-rows-total > 0;
+
+                            for entry in root.transcript-window: TranscriptRowView {
+                                data: entry;
+                                line-height: root.transcript-line-height;
+                                clicked(extend) => { root.select-segment-requested(entry.index, extend); }
+                            }
+                        }
+                    }
+
+                    // --- speakers, only when asked ---
+                    if root.speakers-open: Rectangle {
+                        height: 168px;
+                        background: VaaniColors.raised;
+
+                        Rectangle {
+                            height: 1px;
+                            background: VaaniColors.line;
+                        }
+
+                        Flickable {
+                            vertical-stretch: 1;
+                            width: parent.width;
+                            height: 166px;
+                            content-width: self.width;
+                            content-height: 80px * root.speaker-count;
+                            interactive: true;
+                            visible: root.speakers-visible;
+
+                            VerticalLayout {
+                                x: 0px;
+                                y: 0px;
+                                width: parent.width;
+                                height: 80px * root.speaker-count;
+                                padding-left: 16px;
+                                padding-right: 16px;
+                                padding-top: 8px;
+                                padding-bottom: 8px;
+                                spacing: 4px;
+
+                                for entry in root.speakers: SpeakerRowView {
+                                    data: entry;
+                                    clicked => { root.begin-rename-requested(entry.index); }
+                                }
+                            }
+                        }
+                    }
+
+                    // --- the one line that says what it cost ---
+                    if root.timings-available: Rectangle {
+                        height: 34px;
+                        background: VaaniColors.raised;
+
+                        HorizontalLayout {
+                            padding-left: 16px;
+                            padding-right: 16px;
+                            spacing: 8px;
+
+                            Text {
+                                text: root.speed-line;
+                                color: VaaniColors.ink-dim;
+                                font-size: 12px;
+                                wrap: no-wrap;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: root.speed-badge;
+                                color: VaaniColors.ok;
+                                font-size: 12px;
+                                font-weight: 600;
+                                wrap: no-wrap;
+                                vertical-alignment: center;
+                            }
+
+                            Rectangle {
+                                horizontal-stretch: 1;
+                            }
+
+                            Text {
+                                text: root.device-label;
+                                color: VaaniColors.ink-dim;
+                                font-size: 12px;
+                                wrap: no-wrap;
+                                vertical-alignment: center;
+                            }
+                        }
                     }
                 }
-            }
 
-            // -- main --------------------------------------------------------
-            HorizontalLayout {
-                padding: 0px;
-                spacing: 0px;
-                vertical-stretch: 1;
+                // --- overlays: the other surfaces, painted over the transcript ---
 
-                // --- job list ---
-                Rectangle {
-                    preferred-width: 320px;
-                    min-width: 240px;
-                    background: VaaniColors.raised;
+                if root.history-open: Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: parent.height;
+                    background: VaaniColors.surface;
 
                     VerticalLayout {
                         padding: 0px;
                         spacing: 0px;
 
                         Rectangle {
-                            height: 34px;
+                            height: 46px;
                             background: VaaniColors.surface;
 
-                            SectionTitle {
-                                x: 12px;
-                                text: root.job-count == 1 ? "Jobs, 1 total" : "Jobs, " + root.job-count + " total";
-                                vertical-alignment: center;
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+                                spacing: 8px;
+
+                                SectionTitle {
+                                    label: "History";
+                                    vertical-alignment: center;
+                                }
+
+                                Text {
+                                    text: root.job-count == 1 ? "1 file" : root.job-count + " files";
+                                    color: VaaniColors.ink-dim;
+                                    font-size: 12px;
+                                    horizontal-stretch: 1;
+                                    wrap: no-wrap;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+
+                                ActionButton {
+                                    label: "Back to transcript";
+                                    description: "Return to the transcript.";
+                                    clicked => { root.history-toggled(); }
+                                }
                             }
                         }
 
                         Rectangle {
+                            height: 1px;
+                            background: VaaniColors.line;
+                        }
+
+                        Rectangle {
                             vertical-stretch: 1;
-                            background: VaaniColors.raised;
+                            background: VaaniColors.surface;
 
                             if root.job-count == 0: EmptyState {
-                                message: "No jobs yet";
-                                hint: "Press F2 or use Add file to queue something.";
+                                message: "Nothing transcribed yet";
+                                hint: "Choose a file, or type a path above.";
                             }
 
                             if root.job-count > 0: ListView {
-                                accessible-label: "Transcription jobs";
+                                accessible-label: "Transcription history";
 
                                 for entry[job-index] in root.jobs: JobRowView {
                                     data: entry;
@@ -1155,273 +1435,197 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                Rectangle {
-                    width: 1px;
-                    background: VaaniColors.line;
-                }
-
-                // --- transcript ---
-                Rectangle {
-                    horizontal-stretch: 1;
+                if root.performance-open: Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: parent.height;
                     background: VaaniColors.surface;
 
                     VerticalLayout {
                         padding: 0px;
                         spacing: 0px;
 
-                        // header
                         Rectangle {
-                            height: 42px;
+                            height: 46px;
                             background: VaaniColors.surface;
 
                             HorizontalLayout {
-                                padding-left: 12px;
-                                padding-right: 12px;
-                                padding-top: 6px;
-                                padding-bottom: 6px;
+                                padding-left: 16px;
+                                padding-right: 16px;
                                 spacing: 8px;
 
                                 SectionTitle {
-                                    label: "Transcript";
+                                    label: "Speed";
                                     vertical-alignment: center;
                                 }
 
                                 Text {
-                                    text: root.transcript-summary;
+                                    text: root.device-label;
+                                    color: VaaniColors.ink-dim;
+                                    font-size: 12px;
+                                    horizontal-stretch: 1;
+                                    wrap: no-wrap;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+
+                                ActionButton {
+                                    label: "Back to transcript";
+                                    description: "Return to the transcript.";
+                                    clicked => { root.performance-toggled(); }
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            height: 1px;
+                            background: VaaniColors.line;
+                        }
+
+                        Flickable {
+                            vertical-stretch: 1;
+                            width: parent.width;
+                            height: parent.height;
+                            content-width: self.width;
+                            content-height: 420px;
+                            interactive: true;
+
+                            VerticalLayout {
+                                x: 0px;
+                                y: 0px;
+                                width: parent.width;
+                                height: 420px;
+                                padding-left: 16px;
+                                padding-right: 16px;
+                                padding-top: 16px;
+                                padding-bottom: 16px;
+                                spacing: 12px;
+
+                                // The headline, in the largest type on the panel.
+                                Text {
+                                    text: root.speed-badge == "" ? "No measurement yet" : root.speed-badge;
+                                    color: VaaniColors.ink;
+                                    font-size: 26px;
+                                    font-weight: 700;
+                                    wrap: no-wrap;
+                                    overflow: elide;
+                                }
+
+                                Text {
+                                    text: root.speed-line;
+                                    color: VaaniColors.ink-dim;
+                                    font-size: 14px;
+                                    wrap: no-wrap;
+                                    overflow: elide;
+                                }
+
+                                Text {
+                                    text: root.speed-note;
+                                    color: VaaniColors.ink-dim;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+
+                                Rectangle {
+                                    height: 1px;
+                                    background: VaaniColors.line;
+                                }
+
+                                // Where the time went. The bars are shares of
+                                // measured time, so the three always add up to
+                                // the whole and nothing is rounded into looking
+                                // like a guess.
+                                for stage in root.speed-rows: Rectangle {
+                                    height: 44px;
+
+                                    VerticalLayout {
+                                        padding: 0px;
+                                        spacing: 4px;
+
+                                        HorizontalLayout {
+                                            padding: 0px;
+                                            spacing: 8px;
+
+                                            Text {
+                                                text: stage.label;
+                                                color: VaaniColors.ink;
+                                                font-size: 13px;
+                                                horizontal-stretch: 1;
+                                                wrap: no-wrap;
+                                                overflow: elide;
+                                            }
+
+                                            Text {
+                                                text: stage.value;
+                                                color: VaaniColors.ink-dim;
+                                                font-size: 13px;
+                                                wrap: no-wrap;
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            height: 6px;
+                                            background: VaaniColors.raised;
+
+                                            Rectangle {
+                                                width: parent.width * (stage.share < 0 ? 0 : min(stage.share, 1));
+                                                background: VaaniColors.accent;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    height: 1px;
+                                    background: VaaniColors.line;
+                                }
+
+                                Text {
+                                    text: root.word-label;
                                     color: VaaniColors.ink-dim;
                                     font-size: 12px;
                                     wrap: no-wrap;
                                     overflow: elide;
-                                    horizontal-stretch: 1;
-                                    vertical-alignment: center;
-                                }
-
-                                search-field := LineEdit {
-                                    preferred-width: 180px;
-                                    text: root.search-text;
-                                    placeholder-text: "Find in transcript";
-                                    accessible-label: "Find in transcript";
-                                    accessible-description: "Press F3 for the next match, Shift F3 for the previous one.";
-                                    edited(t) => { root.search-text = t; root.search-edited(t); }
-                                    accepted(t) => { root.search-text = t; root.search-edited(t); root.find-next-requested(); }
-                                }
-
-                                ActionButton {
-                                    label: "Previous";
-                                    enabled: root.match-count != "";
-                                    description: "Jump to the previous match. Shortcut Shift F3.";
-                                    clicked => { root.find-previous-requested(); }
-                                }
-
-                                ActionButton {
-                                    label: "Next";
-                                    enabled: root.match-count != "";
-                                    description: "Jump to the next match. Shortcut F3.";
-                                    clicked => { root.find-next-requested(); }
-                                }
-
-                                ActionButton {
-                                    label: "Select all";
-                                    description: "Select every segment so Copy takes all of it.";
-                                    clicked => { root.select-all-requested(); }
-                                }
-
-                                ActionButton {
-                                    label: "Copy";
-                                    primary: true;
-                                    enabled: root.can-copy;
-                                    description: "Copy the selected segments, or the whole transcript if nothing is selected. Shortcut Control C.";
-                                    clicked => { root.copy-requested(); }
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            height: 1px;
-                            background: VaaniColors.line;
-                        }
-
-                        // The scroll viewport. `transcript-window` holds only
-                        // the rows the viewport can show, so the delegate count
-                        // is bounded by the window height, not by the
-                        // transcript's length.
-                        Rectangle {
-                            vertical-stretch: 1;
-                            background: VaaniColors.surface;
-                            clip: true;
-
-                            if root.transcript-rows-total == 0: EmptyState {
-                                message: root.transcript-empty;
-                                hint: "A transcript appears here as soon as the job produces one.";
-                            }
-
-                            transcript-scroll := Flickable {
-                                x: 0;
-                                y: 0;
-                                width: parent.width;
-                                height: parent.height;
-                                content-width: self.width;
-                                content-height: root.transcript-content-height;
-                                content-y <=> root.transcript-scroll-y;
-                                interactive: root.transcript-rows-total > 0;
-                                visible: root.transcript-rows-total > 0;
-
-                                for entry in root.transcript-window: TranscriptRowView {
-                                    data: entry;
-                                    line-height: root.transcript-line-height;
-                                    clicked(extend) => { root.select-segment-requested(entry.index, extend); }
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            height: 1px;
-                            background: VaaniColors.line;
-                        }
-
-                        // The detail pane: the full, unabridged text of the
-                        // selected segment. This is what makes the bounded list
-                        // rows safe: nothing is ever only-available truncated.
-                        if root.transcript-has-detail: Rectangle {
-                            height: 140px;
-                            background: VaaniColors.raised;
-
-                            VerticalLayout {
-                                padding-left: 12px;
-                                padding-right: 12px;
-                                padding-top: 8px;
-                                padding-bottom: 8px;
-                                spacing: 4px;
-
-                                HorizontalLayout {
-                                    padding: 0px;
-                                    spacing: 8px;
-
-                                    SectionTitle {
-                                        label: "Selected segment";
-                                        vertical-alignment: center;
-                                    }
-
-                                    Text {
-                                        text: root.selection-summary;
-                                        color: VaaniColors.ink-dim;
-                                        font-size: 11px;
-                                        horizontal-stretch: 1;
-                                        wrap: word-wrap;
-                                        vertical-alignment: center;
-                                    }
-                                }
-
-                                detail-scroll := ScrollView {
-                                    vertical-stretch: 1;
-
-                                    Text {
-                                        width: detail-scroll.visible-width;
-                                        text: root.transcript-detail;
-                                        color: VaaniColors.ink;
-                                        font-size: 13px;
-                                        wrap: word-wrap;
-                                    }
                                 }
                             }
                         }
                     }
                 }
 
-                Rectangle {
-                    width: 1px;
-                    background: VaaniColors.line;
-                }
-
-                // --- right rail: speakers, then settings ---
-                Rectangle {
-                    preferred-width: 300px;
-                    min-width: 240px;
-                    background: VaaniColors.raised;
+                if root.settings-open: Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: parent.height;
+                    background: VaaniColors.surface;
 
                     VerticalLayout {
                         padding: 0px;
                         spacing: 0px;
 
                         Rectangle {
-                            height: 34px;
+                            height: 46px;
                             background: VaaniColors.surface;
 
-                            SectionTitle {
-                                x: 12px;
-                                text: root.speakers.length == 1
-                                    ? "Speakers, 1 found"
-                                    : "Speakers, " + root.speakers.length + " found";
-                                vertical-alignment: center;
-                            }
-                        }
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+                                spacing: 8px;
 
-                        // Rename editor. An inline panel rather than a modal: a
-                        // dialog for a two-word edit is three clicks too many,
-                        // and an inline one keeps the row being renamed
-                        // visible.
-                        if root.editing-speaker >= 0: Rectangle {
-                            height: 90px;
-                            background: VaaniColors.surface;
-
-                            VerticalLayout {
-                                padding-left: 12px;
-                                padding-right: 12px;
-                                padding-top: 6px;
-                                padding-bottom: 6px;
-                                spacing: 6px;
-
-                                Text {
-                                    text: "Name for " + root.editing-speaker-label;
-                                    color: VaaniColors.ink-dim;
-                                    font-size: 11px;
-                                    wrap: word-wrap;
+                                SectionTitle {
+                                    label: "Settings";
+                                    vertical-alignment: center;
                                 }
 
-                                rename-field := LineEdit {
-                                    text: root.editing-speaker-text;
-                                    placeholder-text: "for example Priya";
+                                Rectangle {
                                     horizontal-stretch: 1;
-                                    accessible-label: "Speaker name";
-                                    accessible-description: "Leave this empty to go back to the generated label.";
-                                    edited(t) => { root.editing-speaker-text = t; }
-                                    accepted(t) => { root.editing-speaker-text = t; root.commit-rename-requested(root.editing-speaker, t); }
                                 }
 
-                                HorizontalLayout {
-                                    padding: 0px;
-                                    spacing: 6px;
-
-                                    ActionButton {
-                                        label: "Save";
-                                        primary: true;
-                                        clicked => { root.commit-rename-requested(root.editing-speaker, root.editing-speaker-text); }
-                                    }
-
-                                    ActionButton {
-                                        label: "Cancel";
-                                        clicked => { root.cancel-rename-requested(); }
-                                    }
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            vertical-stretch: 1;
-                            background: VaaniColors.raised;
-                            clip: true;
-
-                            if root.speakers.length == 0: EmptyState {
-                                message: "No speakers yet";
-                                hint: "Speaker separation runs after transcription, or can be turned off in Settings.";
-                            }
-
-                            if root.speakers.length > 0: ListView {
-                                accessible-label: "Speakers";
-
-                                for entry in root.speakers: SpeakerRowView {
-                                    data: entry;
-                                    clicked => { root.begin-rename-requested(entry.index); }
+                                ActionButton {
+                                    label: "Back to transcript";
+                                    description: "Return to the transcript.";
+                                    clicked => { root.settings-toggled(); }
                                 }
                             }
                         }
@@ -1431,61 +1635,31 @@ export component AppWindow inherits Window {
                             background: VaaniColors.line;
                         }
 
-                        // --- export ---
-                        Rectangle {
-                            height: 76px;
-                            background: VaaniColors.surface;
+                        Flickable {
+                            vertical-stretch: 1;
+                            width: parent.width;
+                            height: parent.height;
+                            content-width: self.width;
+                            content-height: 470px;
+                            interactive: true;
 
                             VerticalLayout {
-                                padding-left: 12px;
-                                padding-right: 12px;
-                                padding-top: 8px;
-                                padding-bottom: 8px;
-                                spacing: 6px;
-
-                                SectionTitle { label: "Export"; }
-
-                                HorizontalLayout {
-                                    padding: 0px;
-                                    spacing: 8px;
-
-                                    ComboBox {
-                                        horizontal-stretch: 1;
-                                        model: ["Plain text (.txt)", "Markdown (.md)", "SubRip subtitles (.srt)", "WebVTT subtitles (.vtt)", "JSON (.json)"];
-                                        current-index <=> root.export-format;
-                                        enabled: root.can-export;
-                                        accessible-label: "Export format";
-                                    }
-
-                                    ActionButton {
-                                        label: "Export...";
-                                        primary: true;
-                                        enabled: root.can-export;
-                                        clicked => { root.export-requested(); }
-                                    }
-                                }
-                            }
-                        }
-
-                        // --- settings ---
-                        if root.settings-open: Rectangle {
-                            height: 244px;
-                            background: VaaniColors.surface;
-
-                            VerticalLayout {
-                                padding-left: 12px;
-                                padding-right: 12px;
-                                padding-top: 8px;
-                                padding-bottom: 8px;
-                                spacing: 6px;
-
-                                SectionTitle { label: "Settings"; }
+                                x: 0px;
+                                y: 0px;
+                                width: parent.width;
+                                height: 470px;
+                                padding-left: 16px;
+                                padding-right: 16px;
+                                padding-top: 16px;
+                                padding-bottom: 16px;
+                                spacing: 10px;
 
                                 Text {
                                     text: "Speech model";
                                     color: VaaniColors.ink-dim;
                                     font-size: 11px;
                                 }
+
                                 ComboBox {
                                     model: root.model-options;
                                     current-index <=> root.model-index;
@@ -1498,6 +1672,7 @@ export component AppWindow inherits Window {
                                     color: VaaniColors.ink-dim;
                                     font-size: 11px;
                                 }
+
                                 ComboBox {
                                     model: root.device-options;
                                     current-index <=> root.device-index;
@@ -1510,6 +1685,7 @@ export component AppWindow inherits Window {
                                     color: VaaniColors.ink-dim;
                                     font-size: 11px;
                                 }
+
                                 ComboBox {
                                     model: root.language-options;
                                     current-index <=> root.language-index;
@@ -1517,24 +1693,37 @@ export component AppWindow inherits Window {
                                     selected(value) => { root.language-selected(value); }
                                 }
 
-                                HorizontalLayout {
-                                    padding: 0px;
-                                    spacing: 8px;
+                                CheckBox {
+                                    text: "Separate speakers";
+                                    checked <=> root.diarize;
+                                    accessible-description: "Runs speaker diarization after transcription. The transcript is complete without it.";
+                                    toggled => { root.diarize-toggled(self.checked); }
+                                }
 
-                                    CheckBox {
-                                        text: "Separate speakers";
-                                        checked <=> root.diarize;
-                                        accessible-description: "Runs speaker diarization after transcription. The transcript is complete without it.";
-                                        toggled => { root.diarize-toggled(self.checked); }
-                                    }
+                                Text {
+                                    text: "Slower, and not always right.";
+                                    color: VaaniColors.ink-dim;
+                                    font-size: 11px;
+                                }
 
-                                    ComboBox {
-                                        horizontal-stretch: 1;
-                                        model: ["Theme: system", "Theme: light", "Theme: dark"];
-                                        current-index <=> root.theme-index;
-                                        accessible-label: "Colour theme";
-                                        selected(value) => { root.theme-selected(root.theme-index); }
-                                    }
+                                ComboBox {
+                                    model: ["Theme: system", "Theme: light", "Theme: dark"];
+                                    current-index <=> root.theme-index;
+                                    accessible-label: "Colour theme";
+                                    selected(value) => { root.theme-selected(root.theme-index); }
+                                }
+
+                                Text {
+                                    text: "Export format";
+                                    color: VaaniColors.ink-dim;
+                                    font-size: 11px;
+                                }
+
+                                ComboBox {
+                                    model: ["Plain text (.txt)", "Markdown (.md)", "SubRip subtitles (.srt)", "WebVTT subtitles (.vtt)", "JSON (.json)"];
+                                    current-index <=> root.export-format;
+                                    enabled: root.can-export;
+                                    accessible-label: "Export format";
                                 }
                             }
                         }
@@ -1542,15 +1731,28 @@ export component AppWindow inherits Window {
                 }
             }
 
-            // -- status bar --------------------------------------------------
             Rectangle {
-                height: 26px;
+                height: 1px;
+                background: VaaniColors.line;
+            }
+
+            // -- status bar --------------------------------------------------
+            // The navigation lives here rather than in the top bar. The top bar
+            // has one job: get a file chosen and started. Everything below is
+            // something you look at *after* you have a transcript, so it belongs
+            // on a strip that costs no width where the work happens.
+            // 38px, not 30px: an ActionButton is 32px tall, and a strip that clips its own
+            // controls is worse than a strip that is a little taller.
+            Rectangle {
+                height: 38px;
                 background: VaaniColors.raised;
 
                 HorizontalLayout {
                     padding-left: 12px;
                     padding-right: 12px;
-                    spacing: 12px;
+                    padding-top: 3px;
+                    padding-bottom: 3px;
+                    spacing: 8px;
 
                     Text {
                         text: root.footer;
@@ -1562,6 +1764,24 @@ export component AppWindow inherits Window {
                         vertical-alignment: center;
                     }
 
+                    ActionButton {
+                        label: "History";
+                        description: "Previous transcriptions. Shortcut F7.";
+                        clicked => { root.history-toggled(); }
+                    }
+
+                    ActionButton {
+                        label: "Speed";
+                        description: "How fast this machine transcribed, and where the time went.";
+                        clicked => { root.performance-toggled(); }
+                    }
+
+                    ActionButton {
+                        label: root.settings-open ? "Close" : "Settings";
+                        description: "Model, device and language options.";
+                        clicked => { root.settings-toggled(); }
+                    }
+
                     Text {
                         // The scale factor is shown because a window that is
                         // legible at 150% and illegible at 100% is a bug users
@@ -1570,7 +1790,9 @@ export component AppWindow inherits Window {
                         text: root.display-scheme + ", " + round(root.scale-factor * 100) + "%";
                         color: VaaniColors.ink-dim;
                         font-size: 11px;
+                        min-width: 96px;
                         wrap: no-wrap;
+                        horizontal-alignment: right;
                         vertical-alignment: center;
                     }
                 }
