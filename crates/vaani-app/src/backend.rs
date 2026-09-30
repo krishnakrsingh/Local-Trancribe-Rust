@@ -23,8 +23,8 @@ use vaani_models::ModelManager;
 use vaani_storage::{new_job_id, JobFilter, JobOrder, Store, StoredError};
 use vaani_ui::backend::{
     user_facing, AppSettings, Choice, ControllerEvent, ExportFormat as UiExportFormat,
-    ExportRequest, ExportTarget as UiExportTarget, JobController, JobId, JobSummary, SettingsPatch,
-    Severity, SpeakerSummary, UserFacingError,
+    ExportRequest, ExportTarget as UiExportTarget, JobController, JobId, JobSummary, JobTimings,
+    SettingsPatch, Severity, SpeakerSummary, UserFacingError,
 };
 
 use crate::config::{default_app_settings, AppConfig};
@@ -252,6 +252,7 @@ impl AppBackend {
                 // History is re-read from the database, which records what ran
                 // but not which device; the row says nothing rather than guess.
                 device: None,
+                timings: None,
             };
             state.order.push(record.id.clone());
             state.jobs.insert(
@@ -423,6 +424,24 @@ impl AppBackend {
             if let Some(device) = &outcome.device {
                 entry.summary.device = Some(device.clone());
             }
+            // Measured, straight from the engine. `audio_ms` is the media's own
+            // length, which is what makes the real-time factor a property of
+            // the recording rather than of how fast this machine happens to be.
+            if outcome.elapsed_ms > 0 {
+                entry.summary.timings = outcome.timings.as_ref().map(|asr| JobTimings {
+                    elapsed_ms: outcome.elapsed_ms,
+                    audio_ms: store
+                        .try_load_transcript(id.as_str())
+                        .ok()
+                        .flatten()
+                        .and_then(|t| t.duration.map(|d| d.as_millis()))
+                        .unwrap_or(0),
+                    frontend_ms: asr.frontend_ms,
+                    encode_ms: asr.encode_ms,
+                    decode_ms: asr.decode_ms,
+                    decode_steps: asr.decode_steps,
+                });
+            }
             ControllerEvent::JobChanged(entry.summary.clone())
         };
         self.emit(event);
@@ -562,6 +581,7 @@ impl JobController for AppBackend {
             cancel_requested: false,
             word_count: None,
             device: None,
+            timings: None,
         };
         {
             let mut state = self.state.lock();

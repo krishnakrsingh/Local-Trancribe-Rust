@@ -163,6 +163,15 @@ pub struct JobOutcome {
     /// Ti, and a build without the CUDA provider DLL transcribes on the CPU
     /// anyway, silently. Reporting what ran is the only way anyone finds out.
     pub device: Option<String>,
+    /// Wall time the whole job took, start to finish.
+    pub elapsed_ms: u64,
+    /// Measured per-phase cost inside speech recognition.
+    ///
+    /// `None` when nothing was recognised - a failed job, a silent file, or a
+    /// resumed one. The UI shows this as a breakdown and the product's own
+    /// `docs/performance` notes quote it, so it is measured rather than derived
+    /// from a model of what ought to cost what.
+    pub timings: Option<vaani_asr::engine::AsrTimings>,
 }
 
 /// Broadcasts one [`Progress`] to every registered sink.
@@ -348,6 +357,9 @@ impl Orchestrator {
             speakers: 0,
             // No engine ran, or none could be reported.
             device: None,
+            // Failed, so there is no speed to report.
+            elapsed_ms: 0,
+            timings: None,
         }
     }
 
@@ -393,6 +405,10 @@ impl Orchestrator {
             speakers: 0,
             // No engine ran, or none could be reported.
             device: None,
+            // Cancelled, so there is no duration worth reporting; a
+            // half-finished job's wall time is not a speed.
+            elapsed_ms: 0,
+            timings: None,
         }
     }
 
@@ -471,8 +487,11 @@ impl Orchestrator {
             segments,
             words,
             speakers,
-            // Reused from an earlier job, so this call built no engine.
+            // Reused from an earlier job, so this call built no engine and
+            // spent its time in SQLite.
             device: None,
+            elapsed_ms: 0,
+            timings: None,
         }))
     }
 
@@ -489,6 +508,12 @@ impl Orchestrator {
         cancel: &CancelToken,
         progress: &ProgressSink,
     ) -> JobOutcome {
+        // The clock starts before anything else, including model load, because
+        // "how long did that file take" is the question a user is asking when
+        // they watch the progress bar. Excluding the load would flatter the
+        // number by the same amount every time and mean nothing.
+        let started = std::time::Instant::now();
+        let elapsed_ms = || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let child = cancel.child();
         if child.is_cancelled() {
             return self.finish_cancelled(job_id, progress);
@@ -602,6 +627,10 @@ impl Orchestrator {
         ) {
             return self.finish_with(job_id, &error, progress);
         }
+        // Read the per-chunk totals out of the stage, so the performance panel
+        // can show where the wall time actually went instead of a pie chart of
+        // guesses.
+        let asr_timings = asr_stage.timings().filter(|t| t.total_ms() > 0);
 
         let mut skipped = Vec::new();
         let diar_stage = match (config.diarize, self.providers.diar.clone()) {
@@ -683,6 +712,8 @@ impl Orchestrator {
             words,
             speakers,
             device,
+            elapsed_ms: elapsed_ms(),
+            timings: asr_timings,
         }
     }
 

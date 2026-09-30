@@ -12,7 +12,9 @@
 //! Silence (no chunks) still produces a transcript: an empty one with the
 //! media duration, so the storage stage has something to persist.
 
-use vaani_asr::engine::{AsrEngine, AudioChunk};
+use std::sync::{Arc, Mutex};
+
+use vaani_asr::engine::{AsrEngine, AsrTimings, AudioChunk};
 use vaani_core::pipeline::{PipelineStage, StageContext};
 use vaani_core::{err, EngineStamp, JobPhase, Language, MediaWindow, Result, Transcript};
 use vaani_media::TARGET_SAMPLE_RATE;
@@ -35,6 +37,14 @@ pub struct AsrStage {
     /// overwrites the last partial; grouping is idempotent, so no special
     /// casing is needed there.
     streaming: Option<(vaani_storage::Store, String)>,
+    /// Per-stage milliseconds summed over every chunk, plus the decode step
+    /// count. Shared so the orchestrator can read the totals after the stage has
+    /// been handed to `run_stage`, which borrows it rather than consuming it.
+    ///
+    /// Measured, not modelled: the engine reports what each chunk actually cost
+    /// and this adds them up. That is the number the performance panel shows,
+    /// and it is the only kind of number worth showing anyone.
+    timings: Arc<Mutex<AsrTimings>>,
 }
 
 impl AsrStage {
@@ -46,7 +56,16 @@ impl AsrStage {
             language,
             policy,
             streaming: None,
+            timings: Arc::new(Mutex::new(AsrTimings::default())),
         }
+    }
+
+    /// The measured per-stage cost of every chunk this stage has run.
+    ///
+    /// `None` only if the stage is poisoned, in which case the performance
+    /// panel omits the breakdown rather than showing a wrong one.
+    pub fn timings(&self) -> Option<AsrTimings> {
+        self.timings.lock().ok().map(|t| t.clone())
     }
 
     /// Publish grouped partial transcripts to `store` under `job_id` after
@@ -118,6 +137,16 @@ impl PipelineStage for AsrStage {
             // does the one rebasing, clamped to the media window so the last
             // frame cannot land past the end of the recording.
             let result = self.engine.transcribe(&input, ctx.cancel)?;
+            // Accumulate what this chunk actually cost, before the segments are
+            // consumed, so the performance panel reports measurement rather
+            // than arithmetic on our own guesses.
+            if let Ok(mut totals) = self.timings.lock() {
+                totals.frontend_ms += result.timings.frontend_ms;
+                totals.encode_ms += result.timings.encode_ms;
+                totals.decode_ms += result.timings.decode_ms;
+                totals.encoder_frames += result.timings.encoder_frames;
+                totals.decode_steps += result.timings.decode_steps;
+            }
             transcript.push_chunk_within(chunk.start, result.segments, &window);
             // Stream a readable partial: group what exists so far (no
             // diarization yet, so speakers come later) and persist it. The UI
