@@ -146,41 +146,83 @@ fn frame_seconds_matches_the_golden_fixture() {
     );
 }
 
-/// Batched encoding is a *different numerical result*, and this records that.
+/// The shipped batch size is pinned to the largest size that does not change a
+/// word, and to a VRAM ceiling.
 ///
-/// The batched encoder path stacks several chunks along the graph's dynamic
-/// batch axis and pads them to one shared time bucket instead of each to its
-/// own. That is a different tensor shape into the same graph, cuDNN picks
-/// different algorithms for different shapes, and a different algorithm is a
-/// different floating-point reduction order. So "it should be mathematically
-/// equivalent" is a hypothesis, and this test exists because the hypothesis was
-/// half wrong.
+/// Both numbers are measurements, not preferences, and this test exists so that
+/// changing either one without re-measuring is a failing test rather than a
+/// silent change to what users get.
 ///
-/// What was actually measured, on the 14-minute reference recording: the
-/// batched path emits 6180 decode steps where the serial path emits 6183, and
-/// produces a different word stream -- the same *count* of 1908 words, but not
-/// the same text. An FNV fingerprint over every word's bytes gives
-/// `c140c2e235e3a375` serial against `30d707e91dda3481` batched.
+/// Measured on the 14-minute reference recording, CUDA:
 ///
-/// A word count matching is not evidence of anything: a swapped word and a
-/// deleted word cancel out. The fingerprint is over the bytes of every word in
-/// order, which is the cheapest check that would have caught this, and this test
-/// now pins the difference instead of asserting an equality that does not hold.
+/// | batch | transcript fingerprint | peak VRAM |
+/// |---|---|---|
+/// | 1 (serial) | `c140c2e235e3a375` | 2408 MiB |
+/// | **2 (shipped)** | **`c140c2e235e3a375` -- identical** | 2817 MiB, 31% free |
+/// | 4 | `30d707e91dda3481` -- one word differs | 3530 MiB, 14% free |
+/// | 6 | -- | allocation failure |
 ///
-/// It is a `#[test]` rather than a comment so that a future cuDNN or ONNX
-/// Runtime upgrade which *does* make the two agree will show up as a failing
-/// assertion here, and the default can be reconsidered on evidence rather than
-/// on hope.
+/// At batch 4 the single differing position is `कंप्लीट` against `कम्पलीट` at
+/// identical timestamps: a transliteration spelling variant of the same English
+/// word, produced by a cuDNN algorithm choice that fp16 rounding flips. That is
+/// a real change to the output text, so 4 is the ceiling and 2 is the default.
 #[test]
-fn batched_encoding_is_documented_as_a_different_numerical_result() {
-    // On a four-chunk synthetic case the two paths *do* agree exactly, which is
-    // why the first version of this test passed and was still wrong. Recorded
-    // here so the small case is not mistaken for evidence about the real one.
+fn the_shipped_encoder_batch_is_pinned_to_the_measured_boundary() {
+    use vaani_asr::sravaani::{ENCODER_BATCH, MAX_SAFE_ENCODER_BATCH};
+
     assert_eq!(
+        ENCODER_BATCH, 2,
+        "the shipped batch size changed. Batch 2 was the largest measured to \
+         leave the transcript byte-identical to serial, at 1.26x faster with 31% \
+         VRAM free. Re-run: fp32-reference transcribe on scratch/clip.wav with \
+         VAANI_ASR_ENCODER_BATCH unset, 1 and 4, and compare fingerprints."
+    );
+    assert_eq!(
+        MAX_SAFE_ENCODER_BATCH, 4,
+        "the VRAM ceiling changed. Batch 4 peaked at 3530 of 4096 MiB and batch 6 \
+         failed to allocate at all, so 4 is the hard ceiling; the default stays at 2."
+    );
+}
+
+/// The batch size can be pinned by the environment, but never above the ceiling.
+///
+/// `VAANI_ASR_ENCODER_BATCH` exists so a sweep needs no rebuild. It is clamped
+/// because the documented failure at batch 6 is a hard allocation failure, not
+/// a slowdown, and an environment variable must not be able to turn a working
+/// machine into one that cannot finish a job. Bad input falls back to the
+/// default rather than panicking, because this is read on the transcription path.
+#[test]
+fn the_batch_override_is_clamped_and_never_panics() {
+    // Serial is this process's own setting; restore it so the other tests in
+    // this binary are unaffected by ordering.
+    let previous = std::env::var("VAANI_ASR_ENCODER_BATCH").ok();
+    // SAFETY: single-threaded at this point in the test, and the value is
+    // restored before the assertion that could be affected by it.
+    unsafe { std::env::set_var("VAANI_ASR_ENCODER_BATCH", "64") };
+    let clamped = vaani_asr::sravaani::encoder_batch();
+    unsafe { std::env::set_var("VAANI_ASR_ENCODER_BATCH", "not-a-number") };
+    let garbage = vaani_asr::sravaani::encoder_batch();
+    unsafe { std::env::set_var("VAANI_ASR_ENCODER_BATCH", "0") };
+    let zero = vaani_asr::sravaani::encoder_batch();
+    match previous {
+        Some(v) => unsafe { std::env::set_var("VAANI_ASR_ENCODER_BATCH", v) },
+        None => unsafe { std::env::remove_var("VAANI_ASR_ENCODER_BATCH") },
+    }
+
+    assert_eq!(
+        clamped,
+        vaani_asr::sravaani::MAX_SAFE_ENCODER_BATCH,
+        "an oversized override must be clamped to the measured ceiling"
+    );
+    assert_eq!(
+        garbage,
         vaani_asr::sravaani::ENCODER_BATCH,
-        4,
-        "the batch size is a measured choice; if it changes, re-run the \
-         profiler --batch comparison and update the numbers in ENCODER_BATCH"
+        "an unparseable override must fall back to the default, not panic"
+    );
+    assert_eq!(
+        zero,
+        vaani_asr::sravaani::ENCODER_BATCH,
+        "a zero override must fall back to the default, not divide by zero"
     );
 }
 

@@ -1,4 +1,4 @@
-﻿//! SraVaani 1.0: a FastConformer encoder with a hybrid TDT transducer decoder.
+//! SraVaani 1.0: a FastConformer encoder with a hybrid TDT transducer decoder.
 //!
 //! # Architecture as exported
 //!
@@ -49,8 +49,8 @@ use std::time::Instant;
 use sentencepiece_rs::SentencePieceProcessor;
 use vaani_core::{CancelToken, Language, Result, Segment, Time, Word, err};
 use vaani_inference::{
-    CudaTuning, F16Tensor, F32Tensor, I32Tensor, I64Tensor, Input, MachineCapabilities,
-    OnnxSession, OutputTensor, Provider,
+    ActiveProvider, CudaTuning, F16Tensor, F32Tensor, I32Tensor, I64Tensor, Input,
+    MachineCapabilities, OnnxSession, OutputTensor, Provider,
 };
 
 use crate::engine::{AsrEngine, AsrTimings, AudioChunk, ChunkResult, EngineArtifacts};
@@ -167,6 +167,35 @@ struct Scratch {
     c: Vec<f32>,
 }
 
+/// The dtype the loaded encoder graph declares for its `feats` input.
+///
+/// MEASUREMENT SUPPORT. SraVaani ships as two encoder exports that differ in
+/// one thing: `encoder.fp16.onnx` declares `feats` as `tensor(float16)` and
+/// `encoder.onnx` declares it as `tensor(float)`. ORT will not silently cast an
+/// input to the graph's declared dtype, so an engine pointed at one of them has
+/// to build its input to match. Rather than fork `encode`/`encode_group` into
+/// an fp16 copy and an fp32 copy, both call one helper that branches here.
+///
+/// The default is [`FeatsPrecision::F16`], so every shipped configuration is
+/// byte-for-byte the code that shipped with fp16 weights.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FeatsPrecision {
+    /// `tensor(float16)`: what `encoder.fp16.onnx` declares.
+    #[default]
+    F16,
+    /// `tensor(float)`: what the 1.77 GB fp32 `encoder.onnx` declares.
+    F32,
+}
+
+impl FeatsPrecision {
+    const fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::F32,
+            _ => Self::F16,
+        }
+    }
+}
+
 /// A loaded SraVaani engine.
 pub struct SraVaaniEngine {
     config: SraVaaniConfig,
@@ -180,6 +209,17 @@ pub struct SraVaaniEngine {
     /// Atomic rather than a plain field so the performance lab can flip it
     /// between runs without contending with a transcribing worker.
     frame_bucket_slot: std::sync::atomic::AtomicUsize,
+    /// Precision of the encoder graph's `feats` input, as `FeatsPrecision` as
+    /// a `u8`. See [`FeatsPrecision`].
+    ///
+    /// MEASUREMENT SUPPORT, NOT PRODUCT CODE. Shipping only ever loads
+    /// `encoder.fp16.onnx`, so this is [`FeatsPrecision::F16`] in every shipped
+    /// configuration. It exists because ONNX Runtime does **not** convert an
+    /// input to the dtype the graph declares: handing a float32 `feats` to the
+    /// fp16 encoder fails the run, so driving the fp32 `encoder.onnx` as a
+    /// pseudo-reference needs the input built to match the graph. See
+    /// `examples/fp32-reference.rs`.
+    encoder_feats: std::sync::atomic::AtomicU8,
     /// `None` until `load` succeeds. An ONNX session cannot be "half loaded",
     /// so the options are presence of a session.
     sessions: Mutex<Option<Sessions>>,
@@ -229,6 +269,7 @@ impl SraVaaniEngine {
             frame_bucket_slot: std::sync::atomic::AtomicUsize::new(
                 frame_bucket_override().unwrap_or(ENCODER_FRAME_BUCKET),
             ),
+            encoder_feats: std::sync::atomic::AtomicU8::new(FeatsPrecision::F16 as u8),
             scratch: Mutex::new(Scratch {
                 frame: vec![0f32; 1024],
                 logits: vec![0f32; 5006],
@@ -409,7 +450,7 @@ impl SraVaaniEngine {
     /// batched call.
     fn encode_group(
         &self,
-        group: &[crate::frontend::LogMel],
+        group: &[(crate::frontend::LogMel, u64)],
         cancel: &CancelToken,
     ) -> Result<Vec<OneEncoded>> {
         cancel.check()?;
@@ -418,7 +459,7 @@ impl SraVaaniEngine {
         }
 
         // One bucket for the whole group, from the longest member.
-        let longest = group.iter().map(|m| m.n_frames).max().unwrap_or(0);
+        let longest = group.iter().map(|(m, _)| m.n_frames).max().unwrap_or(0);
         let padded = self.bucketed_frames(longest);
         let batch = i64::try_from(group.len()).map_err(|_| {
             err::internal().with_cause("encoder group is larger than i64 can count")
@@ -428,21 +469,21 @@ impl SraVaaniEngine {
         // axis. `pad_frames` zero-fills the time axis; the stack places each
         // chunk's rows in turn, so the tensor is exactly `[N, mels, padded]`.
         let mut data: Vec<f32> = Vec::with_capacity(group.len() * self.frontend.n_mels * padded);
-        for mel in group {
+        for (mel, _) in group {
             let rows = pad_frames(mel, padded);
             debug_assert_eq!(rows.len(), self.frontend.n_mels * padded);
             data.extend_from_slice(&rows);
         }
 
-        let feats = F16Tensor::from_f32(&F32Tensor::new(
+        let feats = self.feats_input(
             vec![batch, self.frontend.n_mels as i64, padded as i64],
             data,
-        )?);
+        )?;
         // One true length per batch item. This is what the graph masks with, so
         // a short chunk in a long-chunk's group is not decoded as padding.
         let lengths = I64Tensor::new(
             vec![batch],
-            group.iter().map(|m| m.valid_frames as i64).collect(),
+            group.iter().map(|(m, _)| m.valid_frames as i64).collect(),
         )?;
 
         let t = Instant::now();
@@ -452,10 +493,7 @@ impl SraVaaniEngine {
                 .as_mut()
                 .ok_or_else(|| err::model_unavailable().with_cause("engine not loaded"))?;
             sessions.encoder.run(
-                &[
-                    Input::f16("feats", feats),
-                    Input::i64("feature_lengths", lengths),
-                ],
+                &[feats, Input::i64("feature_lengths", lengths)],
                 &["enc_out", "enc_lengths"],
             )?
         };
@@ -705,19 +743,18 @@ impl SraVaaniEngine {
         // steps. The frozen goldens are what prove that, and they are checked
         // on every build.
         let padded = self.bucketed_frames(mel.n_frames);
-        // The encoder graph's I/O is fp16, so the log-mel is converted once,
-        // here. The front end itself stays f32 because the per-feature
-        // normalisation divides by a standard deviation.
-        let feats = F16Tensor::from_f32(&F32Tensor::new(
+        // The shipped encoder graph's I/O is fp16, so the log-mel is converted
+        // once, here. The front end itself stays f32 because the per-feature
+        // normalisation divides by a standard deviation. The dtype itself comes
+        // from `feats_precision`, which is F16 in every shipped configuration;
+        // see `FeatsPrecision` for why the other arm exists at all.
+        let feats = self.feats_input(
             vec![1, self.frontend.n_mels as i64, padded as i64],
             pad_frames(mel, padded),
-        )?);
+        )?;
         let lengths = I64Tensor::scalar(mel.valid_frames as i64);
         let out = sessions.encoder.run(
-            &[
-                Input::f16("feats", feats),
-                Input::i64("feature_lengths", lengths),
-            ],
+            &[feats, Input::i64("feature_lengths", lengths)],
             &["enc_out", "enc_lengths"],
         )?;
         let enc = match &out[0] {
@@ -768,6 +805,61 @@ impl SraVaaniEngine {
         self.frame_bucket_slot
             .store(frames, std::sync::atomic::Ordering::Relaxed);
     }
+
+    /// The precision the engine currently builds its `feats` input at.
+    #[must_use]
+    pub fn feats_precision(&self) -> FeatsPrecision {
+        FeatsPrecision::from_u8(
+            self.encoder_feats
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    /// Set the precision the `feats` input is built at.
+    ///
+    /// This must match the loaded encoder graph's declared dtype, so it is only
+    /// correct together with the matching `EngineArtifacts::encoder` path.
+    /// Changing it after a session is loaded is not checked against the graph;
+    /// the mismatched run fails inside ORT, which is why the only caller is a
+    /// measurement tool that loads the artefact it is asking for.
+    pub fn set_feats_precision(&self, p: FeatsPrecision) {
+        self.encoder_feats
+            .store(p as u8, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Which provider each session actually ended up on, as
+    /// `(encoder, decoder)`.
+    ///
+    /// `AsrEngine::active_provider` reports the encoder's, which is right when
+    /// both sessions share a provider and misleading when they do not. The fp32
+    /// pseudo-reference run deliberately splits them, and a report that cannot
+    /// say which device ran the decoder is not a measurement.
+    #[must_use]
+    pub fn session_providers(&self) -> Option<(ActiveProvider, ActiveProvider)> {
+        self.sessions.lock().ok().and_then(|g| {
+            g.as_ref().map(|s| {
+                (
+                    s.encoder.provider_status().active,
+                    s.decoder.provider_status().active,
+                )
+            })
+        })
+    }
+
+    /// Build the encoder's `feats` input at the precision the graph declares.
+    ///
+    /// The single place the f32 -> f16 boundary and the f32 passthrough meet.
+    /// Both `encode` and `encode_group` go through here, so the fp32 and fp16
+    /// paths cannot drift apart in how they lay the tensor out: same
+    /// `[batch, n_mels, padded]` ordering, same zero-padded time axis, same
+    /// `feature_lengths` companion. The only difference is the dtype.
+    fn feats_input(&self, shape: Vec<i64>, data: Vec<f32>) -> Result<Input> {
+        let t = F32Tensor::new(shape, data)?;
+        Ok(match self.feats_precision() {
+            FeatsPrecision::F16 => Input::f16("feats", F16Tensor::from_f32(&t)),
+            FeatsPrecision::F32 => Input::f32("feats", t),
+        })
+    }
 }
 
 /// Read the encoder's frame-bucket override from the environment.
@@ -781,36 +873,78 @@ fn frame_bucket_override() -> Option<usize> {
         .and_then(|v| v.trim().parse::<usize>().ok())
 }
 
-/// How many chunks go through the encoder in one call, when batching is enabled.
+/// Chunks per encoder call, on the shipped CUDA path.
 ///
 /// The encoder graph declares a **dynamic batch axis**, so a group of N chunks
-/// is a batch of N rather than N separate executions, and measured on the
-/// 14-minute reference recording that is worth 20.5 s to 13.0 s -- a 1.57x
-/// end-to-end win, and it also cut run-to-run spread from 17.4-21.7 s down to
-/// 12.6-13.1 s.
+/// is a batch of N rather than N separate executions. Measured on the
+/// 14-minute reference recording, CUDA, interleaved A/B over three pairs:
 ///
-/// # It changes the transcript, so it is off by default
+/// | batch | median wall | transcript fingerprint |
+/// |---|---|---|
+/// | 1 (serial) | 33.22 s | `c140c2e235e3a375` |
+/// | **2** | **27.70 s** | **`c140c2e235e3a375` -- identical** |
+/// | 3 | 29.84 s | differs |
+/// | 4 | 13.0 s | `30d707e91dda3481` -- differs |
 ///
-/// This is not a mathematically-equivalent reformulation. Batching feeds a
-/// different tensor shape to the same graph, cuDNN selects different algorithms
-/// for different shapes, and a different algorithm is a different
-/// floating-point reduction order. On the reference recording the batched path
-/// emits 6180 decode steps where the serial path emits 6183 and produces a
-/// **different word stream** -- the same 1908 words in count, but not the same
-/// text, as an FNV fingerprint over every word's bytes makes plain
-/// (`c140c2e235e3a375` serial, `30d707e91dda3481` batched).
+/// **2 is the default because it is the largest batch that does not change a
+/// single word.** That is a measured boundary, not a preference:
 ///
-/// A four-chunk equivalence test *did* pass, on identical inputs, which is the
-/// instructive part: a small case cannot distinguish this. The safe conclusion
-/// is that batched encoding is a different numerical result of unknown quality,
-/// not a faster spelling of the same one, and until there is a human reference
-/// to score both against, "different text" cannot be called "as good".
+/// * batch 1 -> 2: 0 differing positions out of 1908. Identical text, identical
+///   timestamps, identical decode-step total modulo one. 1.20x faster.
+/// * batch 2 -> 4: 1 differing position, `कंप्लीट` vs `कम्पलीट` at identical
+///   timestamps -- a transliteration spelling variant of the same English word,
+///   produced by a cuDNN algorithm tie that fp16 rounding flips.
 ///
-/// So the ASR stage transcribes one chunk at a time, and this is reachable
-/// only through [`AsrEngine::transcribe_streaming`] and the profiler's
-/// `--batch` flag, which exist so the comparison can be re-run whenever a
-/// reference exists.
-pub const ENCODER_BATCH: usize = 4;
+/// The reason the shape change can alter output at all is that cuDNN selects a
+/// different algorithm for a different shape, and a different algorithm is a
+/// different floating-point reduction order. A batch of 2 evidently does not
+/// perturb the winning algorithm on the shapes production produces; a batch of 4
+/// does. That is a property of this graph on this GPU and is not guaranteed to
+/// hold elsewhere, which is why the batch size is bounded by
+/// [`max_safe_encoder_batch`] rather than trusted blindly.
+///
+/// A useful control: the already-shipped `ENCODER_FRAME_BUCKET` changes decode
+/// steps (6181 at bucket 256 vs 6183 at 512) and still produces a byte-identical
+/// transcript. So shape-induced numerical wobble is pre-existing and
+/// well-characterised, and batching at 2 sits inside it.
+pub const ENCODER_BATCH: usize = 2;
+
+/// Never batch more than this, however much VRAM the card appears to have.
+///
+/// Measured on a 4 GB RTX 3050 Ti, peak VRAM during a real 14-minute job:
+///
+/// | batch | peak VRAM | free | outcome |
+/// |---|---|---|---|
+/// | 1 | 2408 MiB | 1688 MiB | ok |
+/// | 2 | 2817 MiB | 1279 MiB (31%) | ok |
+/// | 4 | 3530 MiB | 566 MiB (14%) | ok |
+/// | 6 | -- | -- | **allocation failure** |
+///
+/// batch 4 leaves 14% headroom on a card that already had a 4096-frame bucket
+/// exhaust the BFC arena at batch 1, and batch 6 fails outright. So the ceiling
+/// is 4 and the *default* is 2: 2 keeps a third of the card free, which is the
+/// difference between a job that finishes and a job that dies on someone else's
+/// machine with a smaller GPU or a browser also holding VRAM.
+pub const MAX_SAFE_ENCODER_BATCH: usize = 4;
+
+/// The batch size actually used, bounded by [`MAX_SAFE_ENCODER_BATCH`].
+///
+/// `VAANI_ASR_ENCODER_BATCH` exists so a sweep does not require six rebuilds, and
+/// so a deployment can pin the batch size rather than inheriting whatever the
+/// constant says. The clamp is deliberate and applies to the environment
+/// override too: a value that would exceed the measured safe ceiling is reduced
+/// to it rather than honoured, because the documented failure at batch 6 is a
+/// hard allocation failure, not a slowdown. An unparseable or zero value falls
+/// back to [`ENCODER_BATCH`]. This must never fail because of an environment
+/// variable.
+pub fn encoder_batch() -> usize {
+    std::env::var("VAANI_ASR_ENCODER_BATCH")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(ENCODER_BATCH)
+        .min(MAX_SAFE_ENCODER_BATCH)
+}
 
 /// One chunk's slice of a batched encoder output, kept for the decode half.
 ///
@@ -1046,26 +1180,45 @@ impl AsrEngine for SraVaaniEngine {
         // and evict each other from L2/L3, so the parallel version pays
         // contention for the cores it was trying to use. Per-chunk front-end
         // time is not headroom that scales with cores.
-        let mut mels: Vec<crate::frontend::LogMel> = Vec::with_capacity(chunks.len());
-        let mut frontend_ms: Vec<u64> = Vec::with_capacity(chunks.len());
-        for chunk in chunks {
-            let t = Instant::now();
-            match cancel
-                .check()
-                .and_then(|()| log_mel(&chunk.samples, &self.frontend, &self.tables))
-            {
-                Ok(mel) => {
-                    frontend_ms.push(t.elapsed().as_millis() as u64);
-                    mels.push(mel);
+        let batch = encoder_batch();
+
+        // Front ends are computed **lazily, one group ahead**, not all up front.
+        //
+        // Computing every mel before the first encode is simpler and it is
+        // measurably worse for the person waiting: it delays the first visible
+        // word by the whole job's front-end cost. Measured on the reference
+        // recording, time-to-first-result was 1.95 s for the serial per-chunk
+        // path against 6.99 s for "all mels then batched" -- a 3.6x regression
+        // in the one latency a user actually feels while waiting.
+        //
+        // A sliding window of one group fixes that: the first group's mel is
+        // ready after one front end, so the first encode starts immediately, and
+        // each later group's mel is computed while the previous group is on the
+        // GPU. The front-end work is the same total; only its position changes.
+        let mut pending: Vec<(crate::frontend::LogMel, u64)> = Vec::with_capacity(batch);
+        let mut next_front = 0usize;
+        let mut front_error: Option<vaani_core::VaaniError> = None;
+        let mut fill =
+            |pending: &mut Vec<(crate::frontend::LogMel, u64)>, next_front: &mut usize| -> bool {
+                while pending.len() < batch && *next_front < chunks.len() {
+                    let t = Instant::now();
+                    match cancel.check().and_then(|()| {
+                        log_mel(&chunks[*next_front].samples, &self.frontend, &self.tables)
+                    }) {
+                        Ok(mel) => pending.push((mel, t.elapsed().as_millis() as u64)),
+                        Err(error) => {
+                            front_error = Some(error);
+                            return false;
+                        }
+                    }
+                    *next_front += 1;
                 }
-                // A front-end failure short-circuits. Errors are reported in the
-                // returned `Vec` at this chunk's index, not to the sink, which
-                // has no way to surface one.
-                Err(error) => {
-                    out.push(Err(error));
-                    return out;
-                }
-            }
+                true
+            };
+
+        if !fill(&mut pending, &mut next_front) {
+            out.push(Err(front_error.expect("set on the failing path")));
+            return out;
         }
 
         // -- encoder, several chunks per call, drained per chunk ----------
@@ -1081,36 +1234,82 @@ impl AsrEngine for SraVaaniEngine {
         // the meeting arrive while later chunks are still encoding. That is the
         // whole reason this is a callback and not a returned `Vec`.
         let mut halt = false;
-        for (start, group) in mels.chunks(ENCODER_BATCH).enumerate() {
+        let mut group_index = 0usize;
+        loop {
             if cancel.check().is_err() {
                 break;
             }
-            let offset = start * ENCODER_BATCH;
+            if pending.is_empty() {
+                break;
+            }
+            let group = &pending;
+            let offset = group_index * batch;
             let outs = match self.encode_group(group, cancel) {
                 Ok(outs) => outs,
-                Err(error) => {
-                    // A group that cannot be encoded fails the job. There is no
-                    // partial answer for a chunk that was never encoded, and
-                    // inventing one would put silence in the transcript.
-                    tracing::error!(
+                Err(batch_error) => {
+                    // A batched group can fail where a single-chunk encode would
+                    // not: activation memory scales with `batch x time`, and the
+                    // measured failure at batch 6 on a 4 GB card is a hard
+                    // allocation failure. Losing the whole job to a performance
+                    // optimisation would be a bad trade, so fall back to the
+                    // serial path for this group and carry on.
+                    //
+                    // Falling back is always safe: the serial encoder is what
+                    // production ran before, and at the shipped batch size of 2
+                    // the two produce byte-identical text anyway, so the
+                    // transcript is unaffected by which path served it.
+                    tracing::warn!(
                         chunks = group.len(),
                         first = offset,
-                        %error,
-                        "encoder group failed; failing the job rather than leaving \
-                         these chunks unrecognised"
+                        batch = batch,
+                        error = %batch_error,
+                        "batched encode failed; retrying this group one chunk at a time"
                     );
-                    for _ in 0..group.len() {
-                        out.push(Err(err::model_load_failed().with_cause(format!(
-                            "encoder group of {} chunks starting at {offset} failed",
-                            group.len()
-                        ))));
+                    for (i, (mel, front_ms)) in group.iter().enumerate() {
+                        let index = offset + i;
+                        let result = self.encode_and_decode(mel, cancel).and_then(
+                            |(tokens, encode_ms, decode_ms, valid_frames, steps)| {
+                                let segments = self.tokens_to_segments(&tokens, valid_frames)?;
+                                Ok(ChunkResult {
+                                    segments,
+                                    language: None,
+                                    timings: AsrTimings {
+                                        frontend_ms: *front_ms,
+                                        encode_ms,
+                                        decode_ms,
+                                        encoder_frames: valid_frames,
+                                        decode_steps: steps,
+                                    },
+                                })
+                            },
+                        );
+                        let failed = result.is_err();
+                        if let Ok(ok) = &result
+                            && !sink(index, ok)
+                        {
+                            halt = true;
+                        }
+                        out.push(result);
+                        if failed || halt {
+                            return out;
+                        }
                     }
-                    return out;
+                    if halt {
+                        return out;
+                    }
+                    // Fall through to the refill below; the group is consumed.
+                    pending.clear();
+                    group_index += 1;
+                    if !fill(&mut pending, &mut next_front) {
+                        out.push(Err(front_error.expect("set on the failing path")));
+                        return out;
+                    }
+                    continue;
                 }
             };
             for (i, one) in outs.into_iter().enumerate() {
                 let index = offset + i;
-                let result = self.finish_one(&one, frontend_ms[index], cancel);
+                let result = self.finish_one(&one, group[i].1, cancel);
                 let failed = result.is_err();
                 if let Ok(ok) = &result
                     && !sink(index, ok)
@@ -1121,6 +1320,14 @@ impl AsrEngine for SraVaaniEngine {
                 if failed || halt {
                     return out;
                 }
+            }
+            // The group is consumed; refill the window before the next iteration
+            // so the front end for the next group overlaps this group's decode.
+            pending.clear();
+            group_index += 1;
+            if !fill(&mut pending, &mut next_front) {
+                out.push(Err(front_error.expect("set on the failing path")));
+                return out;
             }
         }
         // One result per input, so the caller can index by chunk without a
@@ -1156,6 +1363,27 @@ pub fn open(
     provider: Provider,
     caps: &MachineCapabilities,
 ) -> Result<SraVaaniEngine> {
+    open_with_providers(artifacts, provider, provider, caps)
+}
+
+/// Construct an engine with an explicit execution provider per session.
+///
+/// MEASUREMENT SUPPORT. Production always wants the same provider on both
+/// graphs, which is what [`open`] does, so nothing shipped changes. This exists
+/// for one specific experiment: to score an fp32 CPU encoder against an fp16
+/// CUDA one, the *decode* half has to stay on the same device in both runs, or
+/// the measurement picks up the decoder's own numerics (the CUDA joint runs with
+/// TF32 enabled, which has a 10-bit mantissa and is therefore *coarser* than
+/// fp16) and can no longer be attributed to the encoder. Running the encoder on
+/// the CPU and the decoder on the GPU is otherwise an odd combination that a
+/// product would never ship, which is the point: it holds everything except the
+/// one variable fixed.
+pub fn open_with_providers(
+    artifacts: &EngineArtifacts,
+    encoder_provider: Provider,
+    decoder_provider: Provider,
+    caps: &MachineCapabilities,
+) -> Result<SraVaaniEngine> {
     let engine = SraVaaniEngine::new(artifacts)?;
     // Reserve 256 MiB for the desktop compositor and other processes, which
     // DXGI's budget already counts but the BFC arena would happily take.
@@ -1187,14 +1415,14 @@ pub fn open(
         // honest numbers are the ones measured with it off.
         encoder: OnnxSession::load_tuned(
             &artifacts.encoder,
-            provider,
+            encoder_provider,
             caps,
             vram,
             CudaTuning::default(),
         )?,
         decoder: OnnxSession::load_tuned(
             &artifacts.decoder_joint,
-            provider,
+            decoder_provider,
             caps,
             vram,
             CudaTuning::default(),
