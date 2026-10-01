@@ -19,6 +19,40 @@ pub const DEFAULT_MODEL: &str = "sravaani-1.0-onnx";
 /// How many times a transient decode failure is retried, by default.
 pub const DEFAULT_DECODE_RETRIES: u32 = 1;
 
+/// Most transcription jobs that may run at once.
+///
+/// # Why this exists
+///
+/// `enqueue` spawns a thread per job and there was nothing counting them. Each
+/// running job holds a fully decoded `AudioBuffer` -- 50.9 MiB for the
+/// 14-minute reference recording, `duration x 16000 x 4` bytes -- plus the
+/// VAD's feature frames, plus a decode work directory on disk. Twenty
+/// simultaneous jobs on a long recording is 1 GiB of audio alone, on a machine
+/// with 4.7 GiB free, with no backpressure and no error.
+///
+/// The engine itself is *not* duplicated: it is created and loaded once when the
+/// orchestrator is built, and jobs share it behind a mutex. So the multiplier
+/// is decoded audio and CPU, not 887 MB of weights per job. That is why the
+/// default is 4 and not 1 -- concurrent jobs genuinely help throughput on a
+/// machine with cores to spare, and a hard 1 would make a queue of files
+/// embarrassingly slow.
+///
+/// The ceiling is a hard clamp rather than a default that an environment
+/// variable can raise, for the same reason `MAX_SAFE_ENCODER_BATCH` is: the
+/// failure mode of getting it wrong is an out-of-memory kill, not a slowdown.
+pub const MAX_CONCURRENT_JOBS: usize = 4;
+
+/// How many jobs may be queued but not yet started.
+///
+/// Without this, a user who drags in two hundred files gets two hundred work
+/// directories created and two hundred decoded-audio jobs eventually scheduled
+/// against a four-slot limit, which is a slow denial of service against their
+/// own disk. The queue is bounded, and the refusal is immediate and specific.
+pub const MAX_QUEUED_JOBS: usize = 64;
+
+/// Total jobs the backend will hold at once, running plus queued.
+pub const MAX_TOTAL_JOBS: usize = MAX_CONCURRENT_JOBS + MAX_QUEUED_JOBS;
+
 /// Everything one pipeline run needs to know that is not the input file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppConfig {

@@ -1,4 +1,4 @@
-//! Errors that the user can be shown, and the recovery action for each.
+﻿//! Errors that the user can be shown, and the recovery action for each.
 //!
 //! Two rules govern this module, and both are load-bearing for product quality:
 //!
@@ -7,7 +7,7 @@
 //!    debug print is a bug. Everything the UI shows comes from
 //!    [`UserFacingError::message`] and [`UserFacingError::recovery`].
 //! 2. **Every error carries a recovery action.** "CUDA unavailable" alone makes
-//!    a user feel the product is broken. "CUDA unavailable — running on CPU
+//!    a user feel the product is broken. "CUDA unavailable â€” running on CPU
 //!    instead, expect slower transcription" is a message a user can act on.
 //!
 //! Developer logs get [`VaaniError`]'s full source chain via `tracing`; the UI
@@ -51,7 +51,7 @@ impl UserFacingError {
     ///
     /// Only for values the user already sees on screen (a model name, a
     /// filename they picked). Never for diagnostics, tokens, or internal
-    /// identifiers — those belong in [`VaaniError::with_source`].
+    /// identifiers â€” those belong in [`VaaniError::with_source`].
     #[must_use]
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = detail.into();
@@ -89,7 +89,7 @@ pub enum ErrorCode {
     /// The file has no audio stream at all.
     NoAudioStream,
     /// A model id that is not in the registry: a typo, a stale settings file,
-    /// or a database written by a newer build. A caller mistake, not a bug —
+    /// or a database written by a newer build. A caller mistake, not a bug â€”
     /// `Internal` tells the user to file a report about their own typo.
     UnknownModel,
     /// A model is not present on disk and offline mode forbids fetching it.
@@ -123,12 +123,24 @@ pub enum ErrorCode {
     /// is open in another process. Waiting or closing the other copy fixes it,
     /// which neither "storage failed" nor "cancelled" says.
     ResourceBusy,
+    /// A configured limit was reached, and refusing now is safer than trying and
+    /// running the machine out of memory, disk or GPU.
+    ///
+    /// Its own code rather than a reuse of `OutOfMemory`, because the two have
+    /// opposite remedies and the user can act on only one of them:
+    /// `OutOfMemory` means the machine could not do the work, and the fix is a
+    /// smaller job, a smaller model or an upgrade. This means the work was
+    /// **never started** because too much of it is already in flight, and the
+    /// fix is to wait for something to finish or cancel something. Telling
+    /// someone to buy more memory when the answer is "wait ten seconds" is the
+    /// kind of confidently wrong advice a resource limit should not produce.
+    ResourceExhausted,
     /// A network request failed.
     NetworkFailed,
     /// The user (or a setting) cancelled the operation.
     Cancelled,
     /// The process died mid-job: a crash, a kill, a power cut. Not a
-    /// cancellation — nobody asked for it and it will not resume — so it gets
+    /// cancellation â€” nobody asked for it and it will not resume â€” so it gets
     /// its own code rather than masquerading as one in the job list.
     Interrupted,
     /// Anything we have not classified yet.
@@ -157,6 +169,7 @@ impl ErrorCode {
             Self::ExportFailed => "export_failed",
             Self::StorageFailed => "storage_failed",
             Self::ResourceBusy => "resource_busy",
+            Self::ResourceExhausted => "resource_exhausted",
             Self::NetworkFailed => "network_failed",
             Self::Cancelled => "cancelled",
             Self::Interrupted => "interrupted",
@@ -296,8 +309,8 @@ pub type Result<T, E = VaaniError> = std::result::Result<T, E>;
 /// If a message genuinely needs a variable value (a model name, a chosen
 /// filename), use [`UserFacingError::with_detail`] at the call site, having
 /// checked that the value is one the user already sees on screen. Making that
-/// an explicit, separate call — rather than a positional argument to a
-/// constructor — is what stops a diagnostic from reaching the UI by accident.
+/// an explicit, separate call â€” rather than a positional argument to a
+/// constructor â€” is what stops a diagnostic from reaching the UI by accident.
 pub mod err {
     use super::{ErrorCode, UserFacingError, VaaniError};
 
@@ -412,6 +425,12 @@ pub mod err {
         resource_busy, ResourceBusy, "Already in use.",
         "Another copy of VaaniDesk is using this right now. Wait for it to \
          finish, or close the other window, then try again."
+    );
+    ctor!(
+        /// A configured limit was reached, so the work was not started.
+        resource_exhausted, ResourceExhausted, "Too many jobs at once.",
+        "This machine is already running as many transcriptions as it is set to
+         handle. Wait for one to finish, or cancel one, then add the next file."
     );
     ctor!(
         /// A network request failed.

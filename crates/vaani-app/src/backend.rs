@@ -1,4 +1,4 @@
-//! The UI backend: [`AppBackend`], a thin [`JobController`] adapter.
+﻿//! The UI backend: [`AppBackend`], a thin [`JobController`] adapter.
 //!
 //! Every method is non-blocking and safe to call from the Slint event-loop
 //! thread. `enqueue` registers the job, emits
@@ -65,6 +65,29 @@ struct JobEntry {
 struct BackendState {
     jobs: HashMap<String, JobEntry>,
     order: Vec<String>,
+}
+
+impl BackendState {
+    /// Jobs that are consuming a concurrency slot.
+    ///
+    /// Counted from the phase rather than from the worker list, because a
+    /// finished job's thread may still be unwinding while its phase is already
+    /// terminal, and the phase is what the user sees. Counting the other way
+    /// would let the limit be exceeded by racing the join.
+    ///
+    /// A job the user has cancelled is **not** counted, even though its phase
+    /// stays active until the worker observes the token. Cancellation is
+    /// cooperative, so the worker is unwinding, not decoding: it has finished
+    /// holding the buffer that makes concurrency expensive, and counting it
+    /// would mean a cancelled job kept its slot for as long as it took the
+    /// unwind -- so cancelling everything and immediately queueing five more
+    /// would be refused, which is the opposite of what the user asked for.
+    fn active_job_count(&self) -> usize {
+        self.jobs
+            .values()
+            .filter(|entry| !entry.summary.phase.is_terminal() && !entry.summary.cancel_requested)
+            .count()
+    }
 }
 
 /// Map a persisted error code back to its [`vaani_core::ErrorCode`].
@@ -212,7 +235,7 @@ impl AppBackend {
     /// Read completed jobs from the store into the in-memory list.
     ///
     /// Without this, every launch starts with an empty job list no matter how
-    /// many transcripts the database holds — the user transcribes, closes the
+    /// many transcripts the database holds Ã¢â‚¬â€ the user transcribes, closes the
     /// app, reopens, and everything is "gone". The store is the source of
     /// truth across restarts; the in-memory map is only for jobs running now.
     ///
@@ -312,7 +335,7 @@ impl AppBackend {
         // The store stage reports `Complete` through the progress channel, so a
         // terminal progress event arrives *before* the worker's own terminal
         // event. If this path published the summary as it stands, the UI would
-        // briefly show a finished job whose transcript pane is empty — and any
+        // briefly show a finished job whose transcript pane is empty Ã¢â‚¬â€ and any
         // consumer that acts on the first terminal event it sees (which is the
         // correct thing for a consumer to do) would read the job as having no
         // result at all. So a terminal progress event carries the derived
@@ -546,14 +569,46 @@ impl AppBackend {
 
     /// Spawn a named worker tracked for joining on drop.
     fn spawn_worker(&self, name: &str, token: CancelToken, body: impl FnOnce() + Send + 'static) {
-        let handle = std::thread::Builder::new()
+        let handle = match std::thread::Builder::new()
             .name(name.to_owned())
             .spawn(body)
-            .expect("failed to spawn backend worker");
+        {
+            Ok(handle) => handle,
+            // A failed spawn means the OS refused a thread -- almost always out
+            // of memory, which is precisely the state this limit exists to avoid
+            // reaching. `expect` would abort the whole application; a worker that
+            // cannot start is a lost job, not a dead process. The job's own
+            // `Drop` path reaps it below.
+            Err(error) => {
+                tracing::error!(%error, "could not spawn a worker thread");
+                self.fail_unstarted(name);
+                return;
+            }
+        };
         self.workers.lock().push(Worker {
             handle: Some(handle),
             token,
         });
+    }
+
+    /// Record that a job could not be started, so it does not sit in the list
+    /// claiming to be queued forever.
+    ///
+    /// Best-effort by design: this runs while handling a failure, and must not
+    /// be able to fail in turn.
+    fn fail_unstarted(&self, _name: &str) {
+        if let Some(mut state) = self.state.try_lock() {
+            let error = user_facing(&err::resource_exhausted().with_cause(
+                "the OS refused a thread, which usually means \
+                                 the machine is out of memory",
+            ));
+            for entry in state.jobs.values_mut() {
+                if !entry.summary.phase.is_terminal() {
+                    entry.summary.phase = JobPhase::Failed;
+                    entry.summary.error = Some(error.clone());
+                }
+            }
+        }
     }
 }
 
@@ -584,6 +639,45 @@ impl JobController for AppBackend {
     }
 
     fn enqueue(&self, input: &Path) -> Result<JobId, UserFacingError> {
+        // Refuse before creating anything, so a rejected enqueue leaves no job
+        // row, no work directory and no thread. Checked here rather than in the
+        // worker because the whole point is to fail *before* the resources are
+        // taken.
+        {
+            let state = self.state.lock();
+            let running = state.active_job_count();
+            if running >= crate::config::MAX_CONCURRENT_JOBS {
+                return Err(user_facing(
+                    &err::resource_exhausted()
+                        .with_cause(format!(
+                            "{running} of {} slots are in use",
+                            crate::config::MAX_CONCURRENT_JOBS
+                        ))
+                        // The next step belongs in `recovery`, the field the UI
+                        // renders as the actionable line. Left in `detail` it
+                        // reads as explanation, and a limit the user cannot act
+                        // on is a dead end.
+                        .with_recovery(
+                            "Wait for a transcription to finish, or cancel one, \
+                             then add the next file.",
+                        ),
+                ));
+            }
+            let held = state.order.len();
+            if held >= crate::config::MAX_TOTAL_JOBS {
+                return Err(user_facing(
+                    &err::resource_exhausted()
+                        .with_cause(format!(
+                            "{held} of {} jobs are already listed",
+                            crate::config::MAX_TOTAL_JOBS
+                        ))
+                        .with_recovery(
+                            "Remove a job from History, or wait for the list to \
+                             clear, then add more files.",
+                        ),
+                ));
+            }
+        }
         let id = JobId::new(new_job_id());
         let token = CancelToken::new();
         let summary = JobSummary {
@@ -858,12 +952,12 @@ impl JobController for AppBackend {
 
     fn runtime_note(&self) -> Option<String> {
         Some(if self.gpu_available {
-            format!("CUDA available · {}", self.gpu_detail)
+            format!("CUDA available Ã‚Â· {}", self.gpu_detail)
         } else {
             // Say the useful thing: not "no GPU", but what is missing and how to
             // get it. A user with a perfectly good GPU who installed the wrong
             // flavour needs to be told that, not told their hardware is bad.
-            format!("CPU only · {}", self.gpu_detail)
+            format!("CPU only Ã‚Â· {}", self.gpu_detail)
         })
     }
 
@@ -1044,6 +1138,78 @@ mod tests {
                 "without one, automatic must not imply it will use a GPU: {detail:?}"
             );
         }
+    }
+
+    /// The concurrency limit must refuse, and must refuse *before* creating a
+    /// job row, a work directory or a thread.
+    ///
+    /// The failure this guards against is a slow out-of-memory: each running job
+    /// holds a fully decoded `AudioBuffer` -- 50.9 MiB for the 14-minute
+    /// reference recording -- and nothing counted them.
+    #[test]
+    fn enqueue_refuses_past_the_concurrency_limit() {
+        let fix = backend_fixture(sine_audio(60), 700, true);
+        let input = fix._temp.path().join("input.wav");
+
+        // A blocking ASR keeps each job in an active phase, so the count
+        // accumulates instead of draining as jobs finish.
+        let mut accepted = Vec::new();
+        let mut refused = None;
+        for _ in 0..crate::config::MAX_CONCURRENT_JOBS + 2 {
+            match fix.backend.enqueue(&input) {
+                Ok(id) => accepted.push(id),
+                Err(error) => {
+                    refused = Some(error);
+                    break;
+                }
+            }
+        }
+
+        assert_eq!(
+            accepted.len(),
+            crate::config::MAX_CONCURRENT_JOBS,
+            "exactly the limit should be accepted before the first refusal"
+        );
+        let error = refused.expect("the limit must eventually refuse");
+        assert_eq!(
+            error.code,
+            vaani_core::ErrorCode::ResourceExhausted,
+            "a limit refusal must be its own code, not `out_of_memory`: the \
+             remedies are opposite. Error was {:?}",
+            error
+        );
+        assert!(
+            error.title.contains("Too many jobs"),
+            "the user must be told what happened in words they can act on, \
+             not given an internal code: {:?}",
+            error.title
+        );
+        assert!(
+            error.recovery.is_some(),
+            "a refusal must say what to do next: {:?}",
+            error
+        );
+
+        // The refusal must not have left a job behind, or the list would grow
+        // without bound even though work never started.
+        let listed = fix.backend.jobs().len();
+        assert_eq!(
+            listed,
+            crate::config::MAX_CONCURRENT_JOBS,
+            "a refused enqueue must leave no job row"
+        );
+
+        // Cancelling frees slots again, so a refusal is not permanent.
+        for id in &accepted {
+            fix.backend
+                .cancel(id)
+                .expect("cancel must accept a running job");
+        }
+        let after: Vec<JobId> = (0..crate::config::MAX_CONCURRENT_JOBS)
+            .map(|_| fix.backend.enqueue(&input))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .expect("slots must be reusable after cancellation");
+        assert_eq!(after.len(), crate::config::MAX_CONCURRENT_JOBS);
     }
 
     #[test]
@@ -1247,7 +1413,7 @@ mod tests {
     }
 
     /// History must survive a restart. A store holding a completed job must
-    /// produce a backend that lists it, with its transcript readable — this is
+    /// produce a backend that lists it, with its transcript readable Ã¢â‚¬â€ this is
     /// what the window shows on every launch after the first transcription.
     /// The bug was that `jobs()` read only in-memory state, so the list was
     /// always empty on startup no matter what the database held.
@@ -1272,8 +1438,8 @@ mod tests {
                 t.push_chunk(Time::ZERO, vec![segment("hello world", 0, 1000)]);
                 store.replace_transcript(id, &t).unwrap();
             }
-            // The store refuses a bare Failed with no cause — a failure with
-            // no reason is a bug, not a state — so the failed job carries one.
+            // The store refuses a bare Failed with no cause Ã¢â‚¬â€ a failure with
+            // no reason is a bug, not a state Ã¢â‚¬â€ so the failed job carries one.
             let reason = (phase == JobPhase::Failed).then(|| {
                 vaani_storage::StoredError::new("transcription_failed", "the engine failed")
             });
