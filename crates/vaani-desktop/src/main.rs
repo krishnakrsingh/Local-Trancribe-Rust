@@ -54,6 +54,25 @@ fn run() -> Result<(), String> {
     })?;
     tracing::info!(db = %store.path().display(), "storage open");
 
+    // Clear out anything a previous run was killed before it could clean up.
+    //
+    // This is a crash-recovery step, not housekeeping: a job's work directory
+    // holds decoded audio and partial exports, `run_job` removes it on every
+    // exit it can reach, and a power cut or a task-manager kill reaches none of
+    // them. On a machine that was interrupted mid-job those directories can be
+    // hundreds of megabytes, and nothing else would ever remove them.
+    //
+    // Before the backend exists, so no live job can be using one.
+    let swept = vaani_app::orchestrator::Orchestrator::sweep_stale_work_dirs(
+        &vaani_app::config::default_work_dir(),
+    );
+    if swept > 0 {
+        tracing::info!(
+            directories = swept,
+            "removed stale work directories from a previous run"
+        );
+    }
+
     // The backend resolves the bundled model, picks the execution provider and
     // owns the job workers. Everything the window shows comes from it.
     let backend = AppBackend::new(store).map_err(|error| {

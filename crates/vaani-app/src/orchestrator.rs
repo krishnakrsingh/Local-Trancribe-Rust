@@ -1,7 +1,7 @@
-//! The stage runner: phases, progress fan-out, cancellation, retries, resume.
+﻿//! The stage runner: phases, progress fan-out, cancellation, retries, resume.
 //!
-//! [`Orchestrator`] runs the §14 pipeline order — media, VAD, chunk/ASR,
-//! diarization plus attribution, storage — and the on-demand export path. It
+//! [`Orchestrator`] runs the Â§14 pipeline order â€” media, VAD, chunk/ASR,
+//! diarization plus attribution, storage â€” and the on-demand export path. It
 //! is the only place that constructs [`StageContext`]s, advances the job
 //! state machine in the [`Store`], and maps outcomes to the terminal phases
 //! `Complete`, `Failed` and `Cancelled`.
@@ -35,7 +35,7 @@ use crate::stages::{
 ///
 /// Split out so tests inject a fake while production resolves the configured
 /// model from the [`ModelManager`], maps it to a registry id, opens the
-/// artefacts and loads the sessions — all of which is `Preparing` work.
+/// artefacts and loads the sessions â€” all of which is `Preparing` work.
 pub trait AsrProvider: Send + Sync + std::fmt::Debug {
     /// Construct and load the engine for `config`.
     ///
@@ -178,7 +178,7 @@ pub struct JobOutcome {
 ///
 /// The backend registers (at least) the sink that updates job summaries and
 /// emits `ControllerEvent::JobChanged`; tests register recorders. A failing
-/// sink must not exist — sinks return nothing — so emission is infallible.
+/// sink must not exist â€” sinks return nothing â€” so emission is infallible.
 #[derive(Default)]
 pub struct Fanout {
     sinks: Mutex<Vec<Arc<ProgressSink>>>,
@@ -501,6 +501,108 @@ impl Orchestrator {
     /// (or `Cancelled`) with the store updated, so a worker thread never has
     /// to interpret errors.
     pub fn run_job(
+        &self,
+        job_id: &str,
+        input: &Path,
+        config: &AppConfig,
+        cancel: &CancelToken,
+        progress: &ProgressSink,
+    ) -> JobOutcome {
+        // Every exit from here on has to remove the work directory, and there
+        // are six of them plus the error returns between stages. Rather than
+        // remember to clean up at each, the body is wrapped: the directory is
+        // removed on the way out whatever the exit was.
+        //
+        // This is a soak-test failure waiting to happen. The media and export
+        // stages write intermediates under `work_dir/<job-id>/`, and nothing
+        // removed them, so a session that transcribed two hundred files left
+        // two hundred directories of decoded audio and partial exports on disk
+        // for as long as the app was installed.
+        let work_root = config.work_dir.clone();
+        let outcome = self.run_job_inner(job_id, input, config, cancel, progress);
+        self.discard_work_dir(&work_root.join(job_id));
+        outcome
+    }
+
+    /// Remove a job's work directory, ignoring a failure.
+    ///
+    /// Best-effort by design. The job's result is already decided by the time
+    /// this runs, and refusing to report a completed transcription because a
+    /// temporary directory could not be deleted would be trading a real outcome
+    /// for a cosmetic one. A failure is logged and the directory is left for
+    /// the next launch's sweep.
+    fn discard_work_dir(&self, dir: &Path) {
+        Self::discard_work_dir_inner(dir);
+    }
+
+    /// The cleanup itself, split out so a test can reach the failure branch
+    /// without loading a model and running a whole job.
+    pub fn discard_work_dir_for_test(dir: &Path) {
+        Self::discard_work_dir_inner(dir);
+    }
+
+    fn discard_work_dir_inner(dir: &Path) {
+        if !dir.exists() {
+            return;
+        }
+        if let Err(error) = std::fs::remove_dir_all(dir) {
+            tracing::warn!(
+                path = %dir.display(),
+                error = %error,
+                "could not remove a job's work directory; it will be swept on \
+                 the next launch"
+            );
+        }
+    }
+
+    /// Remove work directories left behind by a previous run.
+    ///
+    /// [`Self::run_job`] cleans up after itself on every exit it can reach, but
+    /// a process that is killed -- a power cut, a task-manager kill, a hard
+    /// crash in a native library -- does not run any of those exits. Those
+    /// directories are decoded audio and partial exports, and on a machine that
+    /// was interrupted mid-job there can be gigabytes of them.
+    ///
+    /// Called once at startup, before any job exists, so nothing can be removed
+    /// that a live job is using. Each entry is removed individually and a
+    /// failure on one does not stop the sweep: a locked directory should not
+    /// leave every other stale directory in place.
+    pub fn sweep_stale_work_dirs(root: &Path) -> usize {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            // No root yet is the normal first-run case, not a problem.
+            return 0;
+        };
+        let mut removed = 0usize;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            // Only directories this app created, and only ones with no live job.
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if name.starts_with('.') {
+                continue;
+            }
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => {
+                    removed += 1;
+                    tracing::info!(path = %path.display(), "removed a stale work directory");
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %error,
+                        "could not remove a stale work directory"
+                    );
+                }
+            }
+        }
+        removed
+    }
+
+    fn run_job_inner(
         &self,
         job_id: &str,
         input: &Path,

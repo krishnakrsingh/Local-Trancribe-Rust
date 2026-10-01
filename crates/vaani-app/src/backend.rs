@@ -1,4 +1,4 @@
-﻿//! The UI backend: [`AppBackend`], a thin [`JobController`] adapter.
+//! The UI backend: [`AppBackend`], a thin [`JobController`] adapter.
 //!
 //! Every method is non-blocking and safe to call from the Slint event-loop
 //! thread. `enqueue` registers the job, emits
@@ -589,6 +589,37 @@ impl AppBackend {
             handle: Some(handle),
             token,
         });
+        self.reap_finished_workers();
+    }
+
+    /// Drop handles for workers that have already finished.
+    ///
+    /// `Vec::push` alone would keep every `JoinHandle` for the life of the
+    /// session: a finished thread's handle still holds its thread's exit status
+    /// and, on Windows, its stack reservation until it is joined. Two hundred
+    /// files in a queue would accumulate two hundred of them, which is a slow
+    /// leak of exactly the kind a soak test finds and a unit test does not.
+    ///
+    /// `JoinHandle::is_finished` is a non-blocking check, so this costs nothing
+    /// per job; `Worker::drop` cancels an already-finished token, which is a
+    /// no-op, and joins a thread that has already exited.
+    fn reap_finished_workers(&self) {
+        let mut workers = self.workers.lock();
+        let mut finished = 0;
+        workers.retain(|worker| {
+            let done = worker.handle.as_ref().is_none_or(JoinHandle::is_finished);
+            if done {
+                finished += 1;
+            }
+            !done
+        });
+        if finished > 0 {
+            tracing::debug!(
+                finished,
+                retained = workers.len(),
+                "reaped finished workers"
+            );
+        }
     }
 
     /// Record that a job could not be started, so it does not sit in the list
