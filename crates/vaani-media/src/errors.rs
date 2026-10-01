@@ -236,6 +236,40 @@ pub(crate) fn no_audio_decoded(path: &Path) -> VaaniError {
     )
 }
 
+/// The file decodes to more audio than this build will hold in memory.
+///
+/// Its own constructor because the user's next step is genuinely different from
+/// every other decode failure. "The file is damaged" and "this recording is
+/// longer than the app will hold" call for opposite reactions -- one means fix
+/// the file, the other means split the file -- and reporting the first when the
+/// second happened sends someone to re-export a perfectly good recording.
+pub(crate) fn too_long(path: &Path, decoded_ms: i64, limit_ms: i64) -> VaaniError {
+    compose(
+        err::resource_exhausted(),
+        Some(format!(
+            "This recording is longer than this build will transcribe in one \
+             piece (about {}).",
+            humanise_hours(limit_ms)
+        )),
+        "Split the recording into shorter parts and add them one at a time.",
+        format!(
+            "{}: decoded {decoded_ms} ms of audio, limit is {limit_ms} ms",
+            display_path(path)
+        ),
+    )
+}
+
+/// Rough hours, for a message a person can read. Rounded down and floored at one
+/// hour, because "0 hours" is not a number anyone can act on.
+fn humanise_hours(limit_ms: i64) -> String {
+    let hours = limit_ms / 3_600_000;
+    if hours <= 1 {
+        "1 hour".to_string()
+    } else {
+        format!("{hours} hours")
+    }
+}
+
 /// A bug in this crate rather than bad input.
 ///
 /// Every internal error here is a violated invariant, which is why it carries

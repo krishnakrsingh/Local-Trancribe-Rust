@@ -147,6 +147,25 @@ pub struct DecodeOptions {
     /// byte. The cap costs nothing in the normal case: a four-hour meeting at
     /// 16 kHz mono is 921 MB and a real one is far shorter.
     pub reserve_limit_bytes: usize,
+    /// Hard ceiling on the *decoded output*, in bytes, whatever the container
+    /// claims.
+    ///
+    /// `reserve_limit_bytes` only bounds the initial reservation. A file whose
+    /// header says ten seconds and whose packets go on for ten hours passes that
+    /// cap easily -- the vector simply grows as decoding proceeds, which is
+    /// exactly what the reservation cap was documented as permitting. At 16 kHz
+    /// mono f32 that is 230 kB per second of audio, so an hour is 827 MB and a
+    /// long enough file ends the process on a machine with 4.7 GB free.
+    ///
+    /// This is a different kind of bound and it is the one that actually holds:
+    /// it is checked as samples are produced, so a lying header cannot buy
+    /// unbounded memory. Eight hours at 16 kHz mono f32 is 1.8 GB, which is far
+    /// beyond any meeting and comfortably inside what the machine can decode.
+    ///
+    /// Deliberately not configurable from the environment. A ceiling that an
+    /// environment variable can raise is not a ceiling, and this one exists
+    /// precisely for the case where nothing else is trusted.
+    pub max_output_bytes: usize,
     /// How often to check for cancellation, in seconds of source audio. `1.0` is
     /// the pipeline contract's minimum.
     pub cancel_check_audio_seconds: f64,
@@ -165,6 +184,8 @@ impl Default for DecodeOptions {
             // 512 MB. A four-hour meeting at 16 kHz mono is 921 MB, so this caps
             // the pathological cases without touching a realistic one.
             reserve_limit_bytes: 512 * 1024 * 1024,
+            // 8 hours at 16 kHz mono f32. 1.8 GB, far beyond any real meeting.
+            max_output_bytes: 8 * 3600 * 16_000 * 4,
             cancel_check_audio_seconds: 1.0,
             cancel_check_wall_ms: 250,
         }
@@ -372,6 +393,29 @@ pub fn decode(path: &Path, cancel: &CancelToken, options: &DecodeOptions) -> Res
 
     let mut chunk = Vec::new();
     while stream.next_chunk_into(&mut chunk, cancel)? {
+        // The enforced half of the memory bound. `reserve_for` above only caps
+        // the *initial* reservation from the container's claim; this caps what
+        // actually accumulates, so a file that declares ten seconds and then
+        // delivers ten hours of packets fails here instead of taking the
+        // process with it.
+        //
+        // Checked before extending rather than after, so the process never
+        // momentarily holds more than the limit.
+        let next = samples
+            .len()
+            .saturating_add(chunk.len())
+            .saturating_mul(std::mem::size_of::<f32>());
+        if next > options.max_output_bytes {
+            // Report how far it actually got, so the message can distinguish
+            // "slightly too long" from "this file is lying about its length".
+            // The *source* rate is the right divisor: `samples` holds source-rate
+            // frames at this point, before the resample to 16 kHz.
+            let rate = stream.report().source_sample_rate.max(1) as i64;
+            let decoded_ms = (samples.len() as i64).saturating_mul(1000) / rate;
+            let limit_ms =
+                (options.max_output_bytes / std::mem::size_of::<f32>()) as i64 * 1000 / rate;
+            return Err(errors::too_long(path, decoded_ms, limit_ms));
+        }
         samples.extend_from_slice(&chunk);
     }
     let report = stream.finish()?;
