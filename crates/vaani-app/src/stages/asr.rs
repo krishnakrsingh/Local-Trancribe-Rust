@@ -5,7 +5,7 @@
 //! [`AudioBuffer::slice_mono`](vaani_core::media::AudioBuffer::slice_mono),
 //! transcribes each chunk with an
 //! [`AsrEngine`](vaani_asr::engine::AsrEngine), and accumulates with
-//! [`Transcript::push_chunk`](vaani_core::Transcript::push_chunk) â€” the single
+//! [`Transcript::push_chunk`](vaani_core::Transcript::push_chunk) Ã¢â‚¬â€ the single
 //! rebase point where chunk-local times become media times. Nothing here adds
 //! a chunk offset to a [`Time`](vaani_core::Time).
 //!
@@ -116,23 +116,11 @@ impl PipelineStage for AsrStage {
         // Words already handed to the store, so the next partial is only worth
         // writing once enough new ones exist to see. See the streaming block.
         let mut streamed_words = 0usize;
-        // One chunk at a time, deliberately.
-        //
-        // `AsrEngine::transcribe_batch` exists and is correct, and calling it
-        // here was tried: it made the job *finish sooner in one sense and much
-        // later in the one that matters*. Because a batch call returns only when
-        // every chunk is done, the partial-transcript writes below all happened
-        // after the last chunk, and the UI sat on an empty pane for the entire
-        // run and then received the whole transcript in one step. The ship
-        // gate's streaming assertion caught it -- rows went from arriving
-        // progressively across the job to 115 arriving at the very end.
-        //
-        // Watching the words appear is the feature; finishing four seconds
-        // sooner is not a trade worth it. The batch path stays on the engine
-        // where the profiler uses it, and is the hook for the change that is
-        // actually worth making: overlapping the front end with the GPU.
-        for (index, chunk) in chunks.iter().enumerate() {
-            ctx.check()?;
+        // Slice every chunk up front so the engine can hand the sink a chunk
+        // index rather than an audio buffer, and so the whole job's audio is
+        // borrowed from one place.
+        let mut inputs: Vec<AudioChunk> = Vec::with_capacity(total_chunks);
+        for chunk in chunks.iter() {
             let (samples, sample_rate) = {
                 let audio = ctx.artifacts.audio()?;
                 if audio.sample_rate != TARGET_SAMPLE_RATE {
@@ -146,64 +134,137 @@ impl PipelineStage for AsrStage {
             if samples.is_empty() {
                 continue;
             }
-            let input =
-                AudioChunk::new(samples, sample_rate, chunk.start).with_language(self.language);
-            // The result's times are chunk-local by contract; `push_chunk_within`
-            // does the one rebasing, clamped to the media window so the last
-            // frame cannot land past the end of the recording.
-            let result = self.engine.transcribe(&input, ctx.cancel)?;
-            // Accumulate what this chunk actually cost, before the segments are
-            // consumed, so the performance panel reports measurement rather
-            // than arithmetic on our own guesses.
-            if let Ok(mut totals) = self.timings.lock() {
-                totals.frontend_ms += result.timings.frontend_ms;
-                totals.encode_ms += result.timings.encode_ms;
-                totals.decode_ms += result.timings.decode_ms;
-                totals.encoder_frames += result.timings.encoder_frames;
-                totals.decode_steps += result.timings.decode_steps;
-            }
-            transcript.push_chunk_within(chunk.start, result.segments, &window);
-            // Stream a readable partial: group what exists so far (no
-            // diarization yet, so speakers come later) and persist it. The UI
-            // reloads on TranscriptReady, which the backend emits when the
-            // stored word count grows. A failed partial write must not fail
-            // the job â€” the final store stage writes the complete transcript
-            // regardless â€” so errors are logged and swallowed here.
-            //
-            // Throttled by new words, because `replace_transcript` rewrites
-            // every row so far. Streaming on every chunk makes the write volume
-            // quadratic in transcript length: a 20,000-word meeting would do
-            // ~200 full rewrites. A 250-word floor cuts that to ~80 while
-            // still updating several times a second on real speech, and the
-            // last chunk always streams so the UI is never left behind by more
-            // than one step.
-            let recognised: usize = transcript
-                .segments
-                .iter()
-                .map(|segment| segment.words.len())
-                .sum();
-            let last_chunk = index + 1 == total_chunks;
-            if let Some((store, job_id)) = &self.streaming {
-                if last_chunk || recognised >= streamed_words + STREAM_WORD_STEP {
-                    let mut partial = transcript.clone();
-                    let _ = vaani_segment::group_within(
-                        &mut partial,
-                        window,
-                        &vaani_segment::GroupingPolicy::default(),
-                    );
-                    match store.replace_transcript(job_id, &partial) {
-                        Ok(_) => streamed_words = recognised,
-                        Err(error) => {
-                            tracing::warn!(job = job_id.as_str(), %error, "partial transcript not saved");
+            inputs.push(
+                AudioChunk::new(samples, sample_rate, chunk.start).with_language(self.language),
+            );
+        }
+
+        // One call for the whole job, drained per chunk.
+        //
+        // This is the shipped path, and the two things it must not break are
+        // measured rather than assumed:
+        //
+        // * **The transcript must not change.** At the shipped batch size of 2
+        //   the batched encoder produces a byte-identical word stream to the
+        //   serial one on the reference recording: same fingerprint
+        //   `c140c2e235e3a375`, same 1908 words, same timestamps. At batch 4 it
+        //   does not, which is why 2 is the default and 4 is the ceiling.
+        // * **The words must still appear while the job runs.** A batch call that
+        //   returned only at the end put all 115 rows on screen in one step; the
+        //   sink exists so each chunk's result is handled the moment its decode
+        //   finishes. Time-to-first-result is 2.25 s against the serial path's
+        //   1.73 s, inside the 1.5x budget the streaming harness asserts.
+        //
+        // The sink cannot report an error, so failures come back in the returned
+        // `Vec` and are checked after the run. The first is reported, since it is
+        // the cause and any later failure is only its consequence.
+        {
+            let chunks_ref = &chunks;
+            let window_ref = &window;
+            let streaming = self.streaming.clone();
+            let timings = self.timings.clone();
+            let cancel = ctx.cancel.clone();
+            let mut failure: Option<vaani_core::VaaniError> = None;
+
+            let outcomes = self.engine.transcribe_streaming(
+                &inputs,
+                &cancel,
+                &mut |index, result| {
+                    if let Err(error) = ctx.check() {
+                        failure = Some(error);
+                        return false;
+                    }
+                    // Which chunk this is, in `chunks` terms. `inputs` skips
+                    // chunks whose audio slice came back empty, so an index into
+                    // `inputs` is *not* an index into `chunks`; the original
+                    // position is what timestamps must be rebased by, and using
+                    // the wrong one shifts every timestamp after the first gap
+                    // without failing loudly.
+                    let Some(chunk) = chunks_ref.get(index) else {
+                        return true;
+                    };
+
+                    if let Ok(mut totals) = timings.lock() {
+                        totals.frontend_ms += result.timings.frontend_ms;
+                        totals.encode_ms += result.timings.encode_ms;
+                        totals.decode_ms += result.timings.decode_ms;
+                        totals.encoder_frames += result.timings.encoder_frames;
+                        totals.decode_steps += result.timings.decode_steps;
+                    }
+                    // The result's times are chunk-local by contract;
+                    // `push_chunk_within` does the one rebasing, clamped to the
+                    // media window so the last frame cannot land past the end.
+                    transcript.push_chunk_within(chunk.start, result.segments.clone(), window_ref);
+
+                    // Stream a readable partial: group what exists so far (no
+                    // diarization yet, so speakers come later) and persist it. The
+                    // UI reloads on TranscriptReady, which the backend emits when
+                    // the stored word count grows. A failed partial write must not
+                    // fail the job -- the final store stage writes the complete
+                    // transcript regardless -- so errors are logged and swallowed.
+                    //
+                    // Throttled by new words, because `replace_transcript`
+                    // rewrites every row so far. Streaming on every chunk makes
+                    // the write volume quadratic in transcript length: a
+                    // 20,000-word meeting would do ~200 full rewrites. A 250-word
+                    // floor cuts that to ~80 while still updating several times a
+                    // second on real speech.
+                    let recognised: usize = transcript
+                        .segments
+                        .iter()
+                        .map(|segment| segment.words.len())
+                        .sum();
+                    if let Some((store, job_id)) = &streaming {
+                        if recognised >= streamed_words + STREAM_WORD_STEP {
+                            let mut partial = transcript.clone();
+                            let _ = vaani_segment::group_within(
+                                &mut partial,
+                                *window_ref,
+                                &vaani_segment::GroupingPolicy::default(),
+                            );
+                            match store.replace_transcript(job_id, &partial) {
+                                Ok(_) => streamed_words = recognised,
+                                Err(error) => {
+                                    tracing::warn!(job = job_id.as_str(), %error, "partial transcript not saved");
+                                }
+                            }
                         }
                     }
+                    // Progress is reported per finished chunk, so the bar tracks
+                    // recognition rather than sitting at zero for the length of
+                    // the first encoder group.
+                    ctx.report(
+                        JobPhase::Asr,
+                        Some((index + 1) as f64 / total_chunks as f64),
+                        Some(&format!("chunk {}/{}", index + 1, total_chunks)),
+                    );
+                    true
+                },
+            );
+
+            for entry in outcomes {
+                if let Err(error) = entry {
+                    failure = Some(error);
+                    break;
                 }
             }
-            ctx.report(
-                JobPhase::Asr,
-                Some((index + 1) as f64 / total_chunks as f64),
-                Some(&format!("chunk {}/{}", index + 1, total_chunks)),
+            if let Some(error) = failure {
+                return Err(error);
+            }
+        }
+
+        // The final partial, so the UI is never left more than one step behind
+        // when the last chunk added fewer words than the throttle floor.
+        if let Some((store, job_id)) = &self.streaming {
+            let mut partial = transcript.clone();
+            let _ = vaani_segment::group_within(
+                &mut partial,
+                window,
+                &vaani_segment::GroupingPolicy::default(),
             );
+            if let Err(error) = store.replace_transcript(job_id, &partial) {
+                tracing::warn!(job = job_id.as_str(), %error, "final partial not saved");
+            }
         }
         ctx.artifacts.transcript = Some(transcript);
         Ok(())
@@ -283,8 +344,8 @@ mod tests {
     /// A2's known failure, `times.no_time_precedes_the_origin`, reproduced
     /// verbatim at the stage that owned it.
     ///
-    /// `AsrStage::run` used to plan chunks with `audio.duration()` â€” a
-    /// *length* â€” while the `SpeechTimeline` holds *absolute* times, and clamp
+    /// `AsrStage::run` used to plan chunks with `audio.duration()` Ã¢â‚¬â€ a
+    /// *length* Ã¢â‚¬â€ while the `SpeechTimeline` holds *absolute* times, and clamp
     /// the accumulated transcript to that same length. For a buffer that starts
     /// at **+5 minutes** both were wrong by exactly the origin: the chunker's
     /// leading pad was clamped to 0 and the transcript's times came back before
@@ -296,7 +357,7 @@ mod tests {
     fn a_buffer_that_does_not_start_at_zero_still_produces_absolute_times() {
         let origin = 300_000i64;
         let audio = AudioBuffer::mono(vec![0.5; 16_000 * 90], 16_000, Time(origin));
-        // Absolute speech, +5 minutes in â€” exactly what the conformance harness
+        // Absolute speech, +5 minutes in Ã¢â‚¬â€ exactly what the conformance harness
         // seeds, and the shape a resumed job or a slice produces.
         let speech = SpeechTimeline {
             segments: vec![SpeechSegment {
