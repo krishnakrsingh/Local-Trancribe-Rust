@@ -68,9 +68,16 @@ function Invoke-Stage {
     # immediately and a child that fails to launch is a failure, not a warning.
     $global:LASTEXITCODE = 0
     try {
-        $out = & ([string]::Join(' ', $Command)) 2>&1
-    } catch {
-        Write-Host "     could not run: $_" -ForegroundColor Red
+        # Invoked as a *script block* with the splatted array, so each element is
+        # an argument and a path containing spaces stays one argument. Two
+        # earlier versions were wrong in opposite directions: `& $Command`
+        # treated the first element as a command name and silently lost the
+        # exit code of a spawned child PowerShell (so a broken stage reported
+        # PASS), and joining into one string broke on any path with a space in
+        # it (so every stage reported "could not be started"). This is the form
+        # that does neither.
+        $out = & { & $Command[0] @($Command[1..($Command.Count - 1)]) } 2>&1
+    } catch {        Write-Host "     could not run: $_" -ForegroundColor Red
         Write-Stage $Name 'FAIL' 'the command could not be started'
         $script:Failures.Add("$Name (could not start)")
         return $false
@@ -135,7 +142,7 @@ if ($dirty) {
 # ---------------------------------------------------------------------------
 Write-Host ""
 Write-Host "== no private media in history" -ForegroundColor Cyan
-$allow = '^[0-9a-f]{7,40} tests/fixtures/qa/'
+$allow = '^(?:[0-9a-f]{7,40}\s+)?tests/fixtures/qa/'
 $media = & git log --all --name-only --format='' 2>$null |
     Where-Object { $_ -match '\S' } |
     Where-Object { $_ -notmatch $allow } |
