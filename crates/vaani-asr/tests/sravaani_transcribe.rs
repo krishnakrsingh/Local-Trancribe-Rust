@@ -1,4 +1,4 @@
-﻿//! End-to-end SraVaani transcription, gated on the reference decode.
+//! End-to-end SraVaani transcription, gated on the reference decode.
 //!
 //! `decode_golden.json` holds the token ids and word timings produced by the
 //! model's own TorchScript graphs through the reference TDT loop in
@@ -380,6 +380,33 @@ fn matches_reference_token_ids_on_real_audio() {
         return;
     };
     let g: DecodeGolden = serde_json::from_str(&std::fs::read_to_string(&fx).unwrap()).unwrap();
+
+    // Resolved against the repository root when the value is relative, not
+    // against whatever the current directory happens to be.
+    //
+    // An integration test's working directory is the *package* root
+    // (`crates/vaani-asr`), so a caller who reasonably exports
+    // `VAANI_GOLDEN_RAW=scratch/golden_clip.f32` from the repository root gets
+    // "the system cannot find the path specified" here -- which reads as a
+    // missing model rather than a path that was looked up in the wrong place,
+    // and it makes the same command pass or fail depending on who ran it.
+    let wav = if wav.is_absolute() {
+        wav
+    } else {
+        repo_root().join(wav)
+    };
+    if !wav.is_file() {
+        // A skip, not a panic. This test's whole purpose is to be *skipped*
+        // when its private input is absent, and a path resolved against the
+        // wrong directory is exactly that situation wearing a panic's clothes.
+        skip(&format!(
+            "{} does not name a readable file (looked in {})",
+            wav.display(),
+            std::env::current_dir()
+                .map_or_else(|_| "<unknown>".into(), |d| d.display().to_string())
+        ));
+        return;
+    }
 
     let bytes = std::fs::read(&wav).expect("clip must be readable");
     let samples: Vec<f32> = bytes

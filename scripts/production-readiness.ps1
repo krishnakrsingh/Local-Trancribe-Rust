@@ -222,10 +222,24 @@ if ($SkipRealMedia) {
     # false PASS, in the opposite direction: a real pass reported as a gap.
     $raw = 'scratch\golden_clip.f32'
     if (Test-Path $raw) {
-        $env:VAANI_GOLDEN_RAW = $raw
+        # Absolute, and that detail is load-bearing. A relative
+        # VAANI_GOLDEN_RAW resolves against the *test binary's* working
+        # directory, which for an integration test is the crate root
+        # (`crates/vaani-asr`), not the repository root. So the same value that
+        # passes in one invocation fails with "the system cannot find the path
+        # specified" in another, and it looked like a flaky model rather than a
+        # path bug. `build_doctor.ps1` already resolves it absolutely for
+        # exactly this reason.
+        $env:VAANI_GOLDEN_RAW = (Resolve-Path $raw).Path
         $out = & $cargo test --release -p vaani-asr --test sravaani_transcribe 2>&1
         $code = $LASTEXITCODE
         $ran = ($out | Select-String 'matches_reference_token_ids_on_real_audio \.\.\. ok').Count -gt 0
+        if (-not ($code -eq 0 -and $ran)) {
+            # Print why: an opaque "exit 101" for a correctness gate is worse
+            # than useless, and the cause here was a path, not the model.
+            $out | Select-String -Pattern 'panicked|assertion|differs|left|right|not found' |
+                Select-Object -First 6 | ForEach-Object { Write-Host "     $_" -ForegroundColor Red }
+        }
         Remove-Item Env:\VAANI_GOLDEN_RAW -ErrorAction SilentlyContinue
         if ($code -eq 0 -and $ran) {
             Write-Stage 'golden token equality' 'PASS' 'ran and matched the reference token ids'
