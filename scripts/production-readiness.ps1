@@ -207,14 +207,20 @@ if ($SkipRealMedia) {
     Write-Host "== golden token equality" -ForegroundColor Cyan
     # `matches_reference_token_ids_on_real_audio` skips itself unless
     # VAANI_GOLDEN_RAW points at the raw f32 slice the fixture was built from.
-    # That file is not in the repository -- the fixture is, the audio is not --
-    # so on a machine without it the test *skips* and still exits zero.
+    # That audio is deliberately not in the repository, so on a machine without
+    # it the test *skips* and still exits zero.
     #
     # Reporting that as PASS would be a lie: the strictest guarantee the project
     # has (identical token ids to the reference decode) would be unchecked while
-    # the gate said everything was fine. So the stage is a genuine SKIP with a
-    # named consequence, not a pass.
-    $raw = 'scratch\clip-golden.f32'
+    # the gate said everything was fine. So the stage distinguishes 'ran and
+    # matched' from 'skipped', and reports the latter as a SKIP whose consequence
+    # is named in the verdict.
+    #
+    # The filename is the one `build_doctor.ps1` uses. An earlier version of this
+    # stage looked for `clip-golden.f32` and reported the guarantee unverified on
+    # a machine where it had in fact just passed -- the same class of error as a
+    # false PASS, in the opposite direction: a real pass reported as a gap.
+    $raw = 'scratch\golden_clip.f32'
     if (Test-Path $raw) {
         $env:VAANI_GOLDEN_RAW = $raw
         $out = & $cargo test --release -p vaani-asr --test sravaani_transcribe 2>&1
