@@ -24,9 +24,15 @@ param(
     # model. Everything else still runs. Intended for a machine that has neither.
     [switch]$SkipRealMedia,
 
-    # Also build and self-test the GPU package. The CPU package is always built.
+    # The GPU runtime is also the default target, because shipping a CPU-only
+    # build as the primary artefact is what caused the "why is it not on my GPU"
+    # report: the package a user launches has to be the one they were told to
+    # install. A GPU package needs `-Flavour Gpu` explicitly, and building only
+    # one overwrites `target\release-pkg` in place -- so a CPU run leaves a CPU
+    # tree where a GPU tree used to be, which is a trap for anyone testing by
+    # hand afterwards.
     [ValidateSet('Cpu', 'Gpu', 'Both')]
-    [string]$Flavour = 'Cpu',
+    [string]$Flavour = 'Both',
 
     # Set by tests that are themselves part of the gate, to avoid recursion.
     [switch]$Child
@@ -199,12 +205,32 @@ if ($SkipRealMedia) {
 } else {
     Write-Host ""
     Write-Host "== golden token equality" -ForegroundColor Cyan
-    $env:VAANI_GOLDEN_RAW = if ($clip) { 'scratch/clip-golden.f32' } else { '' }
-    & $cargo test --release -p vaani-asr --test sravaani_transcribe 2>&1 |
-        Select-String -Pattern 'matches_reference_token_ids' | ForEach-Object { Write-Host "     $_" -ForegroundColor DarkGray }
-    if ($LASTEXITCODE -eq 0) { Write-Stage 'golden token equality' 'PASS' }
-    else { Write-Stage 'golden token equality' 'FAIL'; $script:Failures.Add('golden token equality') }
-    Remove-Item Env:\VAANI_GOLDEN_RAW -ErrorAction SilentlyContinue
+    # `matches_reference_token_ids_on_real_audio` skips itself unless
+    # VAANI_GOLDEN_RAW points at the raw f32 slice the fixture was built from.
+    # That file is not in the repository -- the fixture is, the audio is not --
+    # so on a machine without it the test *skips* and still exits zero.
+    #
+    # Reporting that as PASS would be a lie: the strictest guarantee the project
+    # has (identical token ids to the reference decode) would be unchecked while
+    # the gate said everything was fine. So the stage is a genuine SKIP with a
+    # named consequence, not a pass.
+    $raw = 'scratch\clip-golden.f32'
+    if (Test-Path $raw) {
+        $env:VAANI_GOLDEN_RAW = $raw
+        $out = & $cargo test --release -p vaani-asr --test sravaani_transcribe 2>&1
+        $code = $LASTEXITCODE
+        $ran = ($out | Select-String 'matches_reference_token_ids_on_real_audio \.\.\. ok').Count -gt 0
+        Remove-Item Env:\VAANI_GOLDEN_RAW -ErrorAction SilentlyContinue
+        if ($code -eq 0 -and $ran) {
+            Write-Stage 'golden token equality' 'PASS' 'ran and matched the reference token ids'
+        } else {
+            Write-Stage 'golden token equality' 'FAIL' "exit $code, matched=$ran"
+            $script:Failures.Add('golden token equality did not run or did not match')
+        }
+    } else {
+        Note-Skip 'golden token equality' "$raw is absent, so token-id equality with the reference is UNVERIFIED for this build"
+        $script:Warnings.Add('GOLDEN TOKEN EQUALITY NOT CHECKED: the strictest correctness guarantee is unverified')
+    }
 }
 
 # ---------------------------------------------------------------------------
